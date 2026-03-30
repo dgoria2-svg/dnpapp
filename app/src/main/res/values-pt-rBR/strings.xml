@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+
+    <!-- App / básicos -->
+    <string name="app_name">Precal Demolens</string>
+
+    <!-- Welcome -->
+    <string name="welcome_title">Precal Demolens</string>
+    <string name="welcome_sub">Uma única captura: círculo 75 → traça a forma → salva o traçado</string>
+    <string name="btn_ver_instr">Ver instruções</string>
+    <string name="btn_continuar">Continuar</string>
+
+    <!-- Instruções + ações PDF -->
+    <string name="instr_title">Instruções (resumo)</string>
+    <string name="instr_body">
+Imprima o gabarito A4 em 100% (círculo de 75 mm). Verifique se a medida de referência (50 mm) está na escala correta. Coloque a Demolens dentro do círculo e tire a foto. O app usará essa referência para traçar o contorno. É muito importante usar iluminação indireta, evitando reflexos. Luzes ou sombras sobre a Demolens impedem o traçado. Confira as informações visíveis em relação à Demolens para checar as medidas e corrija, se necessário, a orientação horizontal usando o ajuste de eixo na barra deslizante.
+    </string>
+
+    <!-- Botões de instruções -->
+    <string name="instr_download_pdf">Ver / imprimir PDF</string>
+    <string name="instr_share_pdf">Compartilhar PDF</string>
+    <string name="instr_back">Voltar</string>
+    <string name="instr_accept">Aceitar</string>
+
+    <!-- Texto / descrições PDF -->
+
+    <!-- Mensagens de download (caso volte a usar DownloadManager/Drive depois) -->
+    <string name="instr_download_failed">Não foi possível baixar o PDF</string>
+
+    <!-- Títulos para chooser / compartilhar -->
+    <!-- Compatibilidade com código que usa instr_share_title -->
+
+    <!-- Erros / toasts relacionados ao PDF -->
+
+    <!-- Mensagens genéricas / permissões / captura -->
+    <string name="msg_permiso_cam">É necessário permissão para usar a câmera</string>
+    <string name="msg_error_captura">Erro na captura</string>
+
+    <!-- Termos -->
+
+    <!-- Captura (StillCapture) -->
+    <string name="precal_processing">Processando traçado…</string>
+    <string name="msg_error_load_photo">Erro ao carregar a foto.</string>
+    <string name="precal_toast_no_ref75">Não foi detectado o gabarito de 75 mm.</string>
+    <string name="precal_toast_trace_fail">Não foi possível traçar a lente.</string>
+
+    <!-- Resultados (Precal) -->
+    <string name="results_precal_title">Resultados</string>
+    <string name="precal_status_ok">Traçado OK</string>
+    <string name="precal_status_missing">Sem traçado</string>
+    <string name="precal_calculando_preview">Calculando comparação…</string>
+
+    <!-- Métricas -->
+    <string name="precal_rotate_label">Rotação do eixo</string>
+    <string name="precal_order_label">Número de ordem (apenas números)</string>
+
+    <!-- Botões / ações resultados -->
+    <string name="precal_btn_save">Salvar</string>
+    <string name="precal_btn_share">Compartilhar</string>
+    <string name="btn_volver">Voltar</string>
+    <string name="trace_share_title">Compartilhar traçado</string>
+
+    <!-- Toasts / chooser resultados -->
+    <string name="precal_toast_missing_trace">Não há dados de traçado</string>
+    <string name="precal_toast_invalid_order">Número de ordem inválido</string>
+    <string name="precal_toast_saved_ok">Traçado salvo</string>
+    <string name="precal_toast_saved_error">Erro ao salvar o traçado</string>
+
+    <!-- Salvamento / compartilhamento genérico -->
+
+    <!-- Menu / navegação -->
+
+    <!-- Acessibilidade -->
+    <string name="results_image_cd">results_image</string>
+
+    <!-- Outros -->
+    <string name="capture_hint">Alinhe o aro com o círculo de 75 mm e a barra de 50 mm abaixo. Quando estiver centralizado, toque o botão para capturar.</string>
+    <string name="cd_capturar">Capturar foto para traçar a lente</string>
+
+</resources>

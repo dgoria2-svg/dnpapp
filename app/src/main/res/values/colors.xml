@@ -1,0 +1,23 @@
+<resources>
+    <!-- Paleta clara -->
+    <color name="md_primary">#006CFF</color>
+    <color name="md_on_primary">#FFFFFF</color>
+
+    <color name="md_secondary">#00BCD4</color>
+    <color name="md_on_secondary">#00363D</color>
+
+    <color name="md_surface">#FFFFFF</color>
+    <color name="md_on_surface">#1A1C1E</color>
+
+    <color name="md_background">#FFFFFF</color>
+
+    <!-- 🔹 faltantes usados en layouts -->
+    <color name="dnp_green">#4CAF50</color>
+    <color name="md_error">#B00020</color>
+    <color name="md_on_error">#FFFFFF</color>
+
+    <!-- Utilitarios -->
+    <color name="black">#000000</color>
+    <!-- Overlays app -->
+
+</resources>
