@@ -24,7 +24,7 @@ internal data class InnerSeedRow3250(
     val rightX: Int
 )
 
-internal data class SideArcCandidatesLocal3250(
+data class SideArcCandidatesLocal3250(
     val innerLeft: List<PointF>,
     val innerRight: List<PointF>,
     val outerLeft: List<PointF>,
