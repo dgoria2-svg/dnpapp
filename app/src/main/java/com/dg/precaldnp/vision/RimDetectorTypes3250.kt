@@ -49,6 +49,8 @@ internal data class ScaleCandidate3250(
     val topMinAllowedY: Int = -1,
     val topSearchMinY: Int = -1,
     val expectedTopY: Int = -1,
+    val expHGuessPx: Float,
+    val ratioPenalty: Float,
     val expectedTopTolPx: Int = 0,
 
     val isPartial: Boolean
@@ -83,4 +85,26 @@ internal data class BottomCand3250(
     val score: Int,
     val support: Int,
     val dirScore: Int
+)
+internal data class RimGateInput3250(
+    val profile3250: RimProfile3250,
+    val baseConfidence: Float,
+
+    val isPartial: Boolean,
+
+    val hasInnerLaterals: Boolean,
+    val hasOuterLaterals: Boolean,
+
+    val topObservedY: Int?,
+    val topUsedY: Int,
+    val bottomUsedY: Int,
+    val expHGuessPx: Float,
+
+    val ratioPenalty: Float
+)
+
+internal data class RimGateResult3250(
+    val accepted: Boolean,
+    val confidenceOut: Float,
+    val reason3250: String
 )
