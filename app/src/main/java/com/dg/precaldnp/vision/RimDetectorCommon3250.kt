@@ -69,6 +69,37 @@ internal fun pairPolylineToGlobal3250(
     }
 }
 
+internal data class RimSearchPolicy3250(
+    val requireOuter: Boolean,
+    val requireTop: Boolean,
+    val innerMandatory: Boolean,
+    val validateOuterAgainstInner: Boolean
+)
+
+internal fun buildRimSearchPolicy3250(
+    profile3250: RimProfile3250
+): RimSearchPolicy3250 =
+    when (profile3250) {
+        RimProfile3250.FULL_RIM -> RimSearchPolicy3250(
+            requireOuter = true,
+            requireTop = false,
+            innerMandatory = true,
+            validateOuterAgainstInner = true
+        )
+        RimProfile3250.RANURADO -> RimSearchPolicy3250(
+            requireOuter = false,
+            requireTop = true,
+            innerMandatory = true,
+            validateOuterAgainstInner = false
+        )
+        RimProfile3250.PERFORADO -> RimSearchPolicy3250(
+            requireOuter = false,
+            requireTop = false,
+            innerMandatory = true,
+            validateOuterAgainstInner = false
+        )
+    }
+
 internal fun f13250(x: Float): String =
     String.format(Locale.US, "%.1f", x)
 

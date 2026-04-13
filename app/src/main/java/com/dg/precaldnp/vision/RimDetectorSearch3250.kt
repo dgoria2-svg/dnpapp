@@ -71,206 +71,63 @@ import kotlin.math.roundToInt
 
         return s
     }
-    internal fun findInnerWallsAtY3250(
-        edgesU8: ByteArray,
-        dirU8: ByteArray? = null,
-        maskU8: ByteArray?,
-        vScoreU8: ByteArray? = null,
-        w: Int,
-        h: Int,
-        seedX: Int,
-        yRef: Int,
-        bandHalf: Int,
-        minDist: Int,
-        maxDist: Int
-    ): Pair<Int, Int>? {
-        val ys = ArrayList<Int>(2 * bandHalf + 1)
-        for (dy in -bandHalf..bandHalf) {
-            ys.add((yRef + dy).coerceIn(0, h - 1))
-        }
-
-        val leftHits = ArrayList<Int>()
-        val rightHits = ArrayList<Int>()
-
-        val innerMinStep = minDist.coerceAtLeast(1)
-
-        fun scanInner(dx: Int, y: Int): Int? {
-            val xStart = seedX.coerceIn(0, w - 1)
-            var bestX = -1
-            var bestScore = Int.MIN_VALUE
-
-            for (step in innerMinStep..maxDist) {
-                val x = xStart + dx * step
-                if (x !in 0 until w) break
-
-                val idx = y * w + x
-                if (isMaskedPx3250(maskU8, idx)) continue
-                if ((edgesU8[idx].toInt() and 0xFF) == 0) continue
-
-                val support = verticalSupportAt3250(
-                    edgesU8 = edgesU8,
-                    dirU8 = dirU8,
-                    maskU8 = maskU8,
-                    w = w,
-                    h = h,
-                    x = x,
-                    y = y,
-                    halfY = 2
-                )
-                if (support < 2) continue
-
-                val d = if (dirU8 == null) 255 else (dirU8[idx].toInt() and 0xFF)
-                val dirGood = isVertEdgeDir3250(d)
-                if (!dirGood) continue
-
-                val vScore = if (vScoreU8 != null && vScoreU8.size == w * h) {
-                    vScoreU8[idx].toInt() and 0xFF
-                } else {
-                    0
-                }
-
-                val dist = abs(x - xStart)
-
-                val score =
-                    support * 100 +
-                            vScore * 2 -
-                            dist * 6
-
-                if (score > bestScore) {
-                    bestScore = score
-                    bestX = x
-                }
-            }
-
-            return bestX.takeIf { it >= 0 }
-        }
-
-        for (y in ys) {
-            scanInner(dx = -1, y = y)?.let { leftHits.add(it) }
-            scanInner(dx = +1, y = y)?.let { rightHits.add(it) }
-        }
-
-        if (leftHits.isEmpty() || rightHits.isEmpty()) return null
-
-        val left = medianInt3250(leftHits)
-        val right = medianInt3250(rightHits)
-
-        if (left >= right) return null
-        if (abs(right - left) < 40) return null
-
-        return left to right
+internal fun findInnerWallsAtY3250(
+    edgesU8: ByteArray,
+    dirU8: ByteArray? = null,
+    maskU8: ByteArray?,
+    vScoreU8: ByteArray? = null,
+    w: Int,
+    h: Int,
+    seedX: Int,
+    yRef: Int,
+    bandHalf: Int,
+    minDist: Int,
+    maxDist: Int,
+    profile3250: RimProfile3250
+): Pair<Int, Int>? {
+    val ys = ArrayList<Int>(2 * bandHalf + 1)
+    for (dy in -bandHalf..bandHalf) {
+        ys.add((yRef + dy).coerceIn(0, h - 1))
     }
-    internal fun searchNearestInnerAroundPrevX3250(
-        edgesU8: ByteArray,
-        dirU8: ByteArray? = null,
-        maskU8: ByteArray? = null,
-        w: Int,
-        h: Int,
-        y: Int,
-        prevX: Int,
-        centerInsideSeedX: Int,
-        sideSign: Int,
-        searchRadiusPx: Int
-    ): Int? {
-        data class Cand(val x: Int, val score: Int)
 
-        fun onCorrectSide(x: Int): Boolean {
-            return if (sideSign < 0) x < centerInsideSeedX else x > centerInsideSeedX
-        }
+    val leftHits = ArrayList<Int>()
+    val rightHits = ArrayList<Int>()
 
-        fun buildCandidate(x: Int, strict: Boolean): Cand? {
-            if (x !in 0 until w) return null
-            if (!onCorrectSide(x)) return null
+    val innerMinStep = minDist.coerceAtLeast(1)
+
+    val minSupportInner = when (profile3250) {
+        RimProfile3250.PERFORADO -> 1
+        RimProfile3250.FULL_RIM,
+        RimProfile3250.RANURADO -> 2
+    }
+
+    val firstHitWindowPx = when (profile3250) {
+        RimProfile3250.FULL_RIM -> 6
+        RimProfile3250.RANURADO -> 5
+        RimProfile3250.PERFORADO -> 4
+    }
+
+    fun scanInner(dx: Int, y: Int): Int? {
+        val xStart = seedX.coerceIn(0, w - 1)
+
+        var firstHitStep = -1
+        var bestX = -1
+        var bestScore = Int.MIN_VALUE
+
+        for (step in innerMinStep..maxDist) {
+            val x = xStart + dx * step
+            if (x !in 0 until w) break
 
             val idx = y * w + x
-            if (isMaskedPx3250(maskU8, idx)) return null
-            if ((edgesU8[idx].toInt() and 0xFF) == 0) return null
 
-            val support = verticalSupportAt3250(
-                edgesU8 = edgesU8,
-                dirU8 = dirU8,
-                maskU8 = maskU8,
-                w = w,
-                h = h,
-                x = x,
-                y = y,
-                halfY = if (strict) 2 else 1
-            )
-            if (support < if (strict) 2 else 1) return null
-
-            val dirGood = if (dirU8 == null) {
-                true
-            } else {
-                val d = dirU8[idx].toInt() and 0xFF
-                isVertEdgeDir3250(d)
-            }
-            if (strict && !dirGood) return null
-
-            val dist = abs(x - prevX)
-            val score = (if (dirGood) 1000 else 0) + support * 100 - dist * 10
-            return Cand(x = x, score = score)
-        }
-
-        fun search(strict: Boolean): Int? {
-            var best: Cand? = null
-
-            for (d in 0..searchRadiusPx) {
-                if (d == 0) {
-                    val c = buildCandidate(prevX, strict)
-                    if (c != null && (best == null || c.score > best.score)) best = c
-                } else {
-                    val x1 = prevX - d
-                    val x2 = prevX + d
-
-                    val c1 = buildCandidate(x1, strict)
-                    if (c1 != null && (best == null || c1.score > best.score)) best = c1
-
-                    val c2 = buildCandidate(x2, strict)
-                    if (c2 != null && (best == null || c2.score > best.score)) best = c2
-                }
+            if (isMaskedPx3250(maskU8, idx)) {
+                if (firstHitStep >= 0 && step - firstHitStep > firstHitWindowPx) break
+                continue
             }
 
-            return best?.x
-        }
-
-        return search(strict = true)
-    }
-    internal fun searchOuterFromInner3250(
-        edgesU8: ByteArray,
-        dirU8: ByteArray?,
-        maskU8: ByteArray?,
-        w: Int,
-        h: Int,
-        y: Int,
-        innerX: Int,
-        outwardSign: Int,
-        prevGapPx: Int?,
-        minOuterGapPx: Int,
-        maxOuterGapPx: Int,
-        profile3250: RimProfile3250,
-        minSupport: Int = 2
-    ): Int? {
-        if (profile3250 == RimProfile3250.PERFORADO) return null
-
-        val gapTol = when (profile3250) {
-            RimProfile3250.FULL_RIM -> max(3, ((prevGapPx ?: minOuterGapPx) * 0.45f).toInt())
-            RimProfile3250.RANURADO -> max(4, ((prevGapPx ?: minOuterGapPx) * 0.85f).toInt())
-            RimProfile3250.PERFORADO -> return null
-        }
-
-        fun isValidGap(gap: Int): Boolean {
-            if (gap !in minOuterGapPx..maxOuterGapPx) return false
-
-            val x = innerX + outwardSign * gap
-            if (x !in 0 until w) return false
-
-            val idx = y * w + x
-            if (isMaskedPx3250(maskU8, idx)) return false
-            if ((edgesU8[idx].toInt() and 0xFF) == 0) return false
-
-            if (dirU8 != null) {
-                val d = dirU8[idx].toInt() and 0xFF
-                if (!isVertEdgeDir3250(d)) return false
+            if ((edgesU8[idx].toInt() and 0xFF) == 0) {
+                if (firstHitStep >= 0 && step - firstHitStep > firstHitWindowPx) break
+                continue
             }
 
             val support = verticalSupportAt3250(
@@ -283,28 +140,182 @@ import kotlin.math.roundToInt
                 y = y,
                 halfY = 2
             )
-
-            return support >= minSupport
-        }
-        if (prevGapPx != null && prevGapPx > 0) {
-            val g0 = max(minOuterGapPx, prevGapPx - gapTol)
-            val g1 = min(maxOuterGapPx, prevGapPx + gapTol)
-
-            for (gap in g0..g1) {
-                if (isValidGap(gap)) {
-                    return innerX + outwardSign * gap
-                }
+            if (support < minSupportInner) {
+                if (firstHitStep >= 0 && step - firstHitStep > firstHitWindowPx) break
+                continue
             }
-        }
 
-        for (gap in minOuterGapPx..maxOuterGapPx) {
-            if (isValidGap(gap)) {
-                return innerX + outwardSign * gap
+            val d = if (dirU8 == null) 255 else (dirU8[idx].toInt() and 0xFF)
+            val dirGood = isVertEdgeDir3250(d)
+            if (!dirGood) {
+                if (firstHitStep >= 0 && step - firstHitStep > firstHitWindowPx) break
+                continue
             }
+
+            if (firstHitStep < 0) firstHitStep = step
+
+            val vScore = if (vScoreU8 != null && vScoreU8.size == w * h) {
+                vScoreU8[idx].toInt() and 0xFF
+            } else {
+                0
+            }
+
+            val dist = abs(x - xStart)
+
+            val score =
+                support * 100 +
+                        vScore * 2 -
+                        dist * 4
+
+            if (score > bestScore) {
+                bestScore = score
+                bestX = x
+            }
+
+            if (step - firstHitStep >= firstHitWindowPx) break
         }
 
-        return null
+        return bestX.takeIf { it >= 0 }
     }
+
+    for (y in ys) {
+        scanInner(dx = -1, y = y)?.let { leftHits.add(it) }
+        scanInner(dx = +1, y = y)?.let { rightHits.add(it) }
+    }
+
+    if (leftHits.isEmpty() || rightHits.isEmpty()) return null
+
+    val left = medianInt3250(leftHits)
+    val right = medianInt3250(rightHits)
+
+    if (left >= right) return null
+    if (abs(right - left) < 40) return null
+
+    return left to right
+}
+internal fun searchNearestInnerAroundPrevX3250(
+    edgesU8: ByteArray,
+    dirU8: ByteArray? = null,
+    maskU8: ByteArray? = null,
+    w: Int,
+    h: Int,
+    y: Int,
+    prevX: Int,
+    centerInsideSeedX: Int,
+    sideSign: Int,
+    searchRadiusPx: Int,
+    profile3250: RimProfile3250
+): Int? {
+    fun onCorrectSide(x: Int): Boolean {
+        return if (sideSign < 0) x < centerInsideSeedX else x > centerInsideSeedX
+    }
+
+    fun isValidInnerAt(x: Int): Boolean {
+        if (x !in 0 until w) return false
+        if (!onCorrectSide(x)) return false
+
+        val idx = y * w + x
+        if (isMaskedPx3250(maskU8, idx)) return false
+        if ((edgesU8[idx].toInt() and 0xFF) == 0) return false
+
+        val support = verticalSupportAt3250(
+            edgesU8 = edgesU8,
+            dirU8 = dirU8,
+            maskU8 = maskU8,
+            w = w,
+            h = h,
+            x = x,
+            y = y,
+            halfY = 2
+        )
+
+        val minSupport = when (profile3250) {
+            RimProfile3250.PERFORADO -> 1
+            RimProfile3250.FULL_RIM,
+            RimProfile3250.RANURADO -> 2
+        }
+
+        if (support < minSupport) return false
+
+        if (dirU8 != null) {
+            val d = dirU8[idx].toInt() and 0xFF
+            if (!isVertEdgeDir3250(d)) return false
+        }
+
+        return true
+    }
+
+    for (d in 0..searchRadiusPx) {
+        if (d == 0) {
+            if (isValidInnerAt(prevX)) return prevX
+        } else {
+            val x1 = prevX - d
+            val x2 = prevX + d
+
+            if (sideSign < 0) {
+                if (isValidInnerAt(x1)) return x1
+                if (isValidInnerAt(x2)) return x2
+            } else {
+                if (isValidInnerAt(x2)) return x2
+                if (isValidInnerAt(x1)) return x1
+            }
+        }
+    }
+
+    return null
+}
+internal fun searchOuterFromInner3250(
+    edgesU8: ByteArray,
+    dirU8: ByteArray?,
+    maskU8: ByteArray?,
+    w: Int,
+    h: Int,
+    y: Int,
+    innerX: Int,
+    outwardSign: Int,
+    prevGapPx: Int?,
+    minOuterGapPx: Int,
+    maxOuterGapPx: Int,
+    profile3250: RimProfile3250,
+    minSupport: Int = 2
+): Int? {
+    if (profile3250 != RimProfile3250.FULL_RIM) return null
+
+    fun isValidOuterAt(x: Int): Boolean {
+        if (x !in 0 until w) return false
+
+        val idx = y * w + x
+        if (isMaskedPx3250(maskU8, idx)) return false
+        if ((edgesU8[idx].toInt() and 0xFF) == 0) return false
+
+        if (dirU8 != null) {
+            val d = dirU8[idx].toInt() and 0xFF
+            if (!isVertEdgeDir3250(d)) return false
+        }
+
+        val support = verticalSupportAt3250(
+            edgesU8 = edgesU8,
+            dirU8 = dirU8,
+            maskU8 = maskU8,
+            w = w,
+            h = h,
+            x = x,
+            y = y,
+            halfY = 2
+        )
+
+        return support >= minSupport
+    }
+
+    for (gap in minOuterGapPx..maxOuterGapPx) {
+        val x = innerX + outwardSign * gap
+        if (x !in 0 until w) break
+        if (isValidOuterAt(x)) return x
+    }
+
+    return null
+}
+
     internal fun collectBottomCandidatesInWindow3250(
         edgesU8: ByteArray,
         dirU8: ByteArray?,

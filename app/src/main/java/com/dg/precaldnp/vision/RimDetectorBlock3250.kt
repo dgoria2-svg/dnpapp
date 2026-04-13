@@ -283,14 +283,15 @@ object RimDetectorBlock3250 {
                 edgesU8 = edgesU8,
                 dirU8 = dirU8,
                 maskU8 = maskU8,
-                vScoreU8=vScoreU8,
+                vScoreU8 = vScoreU8,
                 w = w,
                 h = h,
                 seedX = seedXLocal,
                 yRef = probeYLocal,
                 bandHalf = BAND_HALF_PX,
                 minDist = distStart,
-                maxDist = maxDist
+                maxDist = maxDist,
+                profile3250 = profile3250
             )
 
             if (lr == null) {
@@ -1545,6 +1546,7 @@ object RimDetectorBlock3250 {
         edgesU8: ByteArray,
         dirU8: ByteArray? = null,
         maskU8: ByteArray?,
+        vScoreU8: ByteArray? = null,
         w: Int,
         h: Int,
         seedXInside: Int,
@@ -1573,14 +1575,17 @@ object RimDetectorBlock3250 {
             edgesU8 = edgesU8,
             dirU8 = dirU8,
             maskU8 = maskU8,
+            vScoreU8 = vScoreU8,
             w = w,
             h = h,
             seedXInside = seedXInside,
             yRef = yRef.coerceIn(y0Inner, y1Inner),
             minDist = 4,
             maxDist = ((w * 0.42f).roundToInt()).coerceAtLeast(24),
-            bandHalf = 3
-        ) ?: return SideArcCandidatesLocal3250(
+            bandHalf = 3,
+            profile3250 = profile3250
+        )
+            ?: return SideArcCandidatesLocal3250(
             innerLeft = emptyList(),
             innerRight = emptyList(),
             outerLeft = emptyList(),
@@ -1599,7 +1604,8 @@ object RimDetectorBlock3250 {
             sideSign = -1,
             y0 = y0Inner,
             y1 = y1Inner,
-            stepY = stepY
+            stepY = stepY,
+            profile3250 = profile3250
         )
 
         val innerRightRaw = traceInnerPolylineFromSeedRow3250(
@@ -1614,7 +1620,8 @@ object RimDetectorBlock3250 {
             sideSign = +1,
             y0 = y0Inner,
             y1 = y1Inner,
-            stepY = stepY
+            stepY = stepY,
+            profile3250 = profile3250
         )
 
         val maxJumpY = max(stepY * 2, 6).toFloat()
@@ -1814,13 +1821,15 @@ object RimDetectorBlock3250 {
         edgesU8: ByteArray,
         dirU8: ByteArray? = null,
         maskU8: ByteArray?,
+        vScoreU8: ByteArray? = null,
         w: Int,
         h: Int,
         seedXInside: Int,
         yRef: Int,
         minDist: Int,
         maxDist: Int,
-        bandHalf: Int
+        bandHalf: Int,
+        profile3250: RimProfile3250
     ): InnerSeedRow3250? {
         val ySeed = yRef.coerceIn(0, h - 1)
 
@@ -1828,13 +1837,15 @@ object RimDetectorBlock3250 {
             edgesU8 = edgesU8,
             dirU8 = dirU8,
             maskU8 = maskU8,
+            vScoreU8 = vScoreU8,
             w = w,
             h = h,
             seedX = seedXInside,
             yRef = ySeed,
             bandHalf = bandHalf,
             minDist = minDist,
-            maxDist = maxDist
+            maxDist = maxDist,
+            profile3250 = profile3250
         ) ?: return null
 
         return InnerSeedRow3250(
@@ -1843,7 +1854,6 @@ object RimDetectorBlock3250 {
             rightX = pair.second
         )
     }
-
     private fun traceInnerPolylineFromSeedRow3250(
         edgesU8: ByteArray,
         dirU8: ByteArray? = null,
@@ -1853,10 +1863,11 @@ object RimDetectorBlock3250 {
         seedX: Int,
         seedY: Int,
         centerInsideSeedX: Int,
-        sideSign: Int, // left=-1, right=+1
+        sideSign: Int,
         y0: Int,
         y1: Int,
-        stepY: Int
+        stepY: Int,
+        profile3250: RimProfile3250
     ): List<PointF> {
 
         val up = traceInnerHalf3250(
@@ -1870,8 +1881,10 @@ object RimDetectorBlock3250 {
             sideSign = sideSign,
             yStart = seedY - stepY,
             yEndInclusive = y0,
-            yStep = -stepY
+            yStep = -stepY,
+            profile3250 = profile3250
         )
+
 
         val down = traceInnerHalf3250(
             edgesU8 = edgesU8,
@@ -1884,7 +1897,8 @@ object RimDetectorBlock3250 {
             sideSign = sideSign,
             yStart = seedY + stepY,
             yEndInclusive = y1,
-            yStep = +stepY
+            yStep = +stepY,
+            profile3250 = profile3250
         )
 
         val out = ArrayList<PointF>(up.size + 1 + down.size)
@@ -1894,70 +1908,72 @@ object RimDetectorBlock3250 {
         return out.sortedBy { it.y }
     }
 
-private fun traceInnerHalf3250(
-    edgesU8: ByteArray,
-    dirU8: ByteArray? = null,
-    maskU8: ByteArray?,
-    w: Int,
-    h: Int,
-    startX: Int,
-    centerInsideSeedX: Int,
-    sideSign: Int,
-    yStart: Int,
-    yEndInclusive: Int,
-    yStep: Int
-): List<PointF> {
+    private fun traceInnerHalf3250(
+        edgesU8: ByteArray,
+        dirU8: ByteArray? = null,
+        maskU8: ByteArray?,
+        w: Int,
+        h: Int,
+        startX: Int,
+        centerInsideSeedX: Int,
+        sideSign: Int,
+        yStart: Int,
+        yEndInclusive: Int,
+        yStep: Int,
+        profile3250: RimProfile3250
+    ): List<PointF> {
 
-    val out = ArrayList<PointF>()
-    var prevX = startX.coerceIn(0, w - 1)
-    var prevDx = 0
-    var missCount = 0
+        val out = ArrayList<PointF>()
+        var prevX = startX.coerceIn(0, w - 1)
+        var prevDx = 0
+        var missCount = 0
 
-    var y = yStart
-    while (if (yStep > 0) y <= yEndInclusive else y >= yEndInclusive) {
+        var y = yStart
+        while (if (yStep > 0) y <= yEndInclusive else y >= yEndInclusive) {
 
-        val expectedX = (prevX + prevDx).coerceIn(0, w - 1)
-        val radius = when (missCount) {
-            0 -> 10
-            1 -> 14
-            else -> 18
-        }
+            val expectedX = (prevX + prevDx).coerceIn(0, w - 1)
+            val radius = when (missCount) {
+                0 -> 10
+                1 -> 14
+                else -> 18
+            }
 
-        val xFound = searchNearestInnerAroundPrevX3250(
-            edgesU8 = edgesU8,
-            dirU8 = dirU8,
-            maskU8 = maskU8,
-            w = w,
-            h = h,
-            y = y,
-            prevX = expectedX,
-            centerInsideSeedX = centerInsideSeedX,
-            sideSign = sideSign,
-            searchRadiusPx = radius
-        )
+            val xFound = searchNearestInnerAroundPrevX3250(
+                edgesU8 = edgesU8,
+                dirU8 = dirU8,
+                maskU8 = maskU8,
+                w = w,
+                h = h,
+                y = y,
+                prevX = expectedX,
+                centerInsideSeedX = centerInsideSeedX,
+                sideSign = sideSign,
+                searchRadiusPx = radius,
+                profile3250 = profile3250
+            )
 
-        if (xFound != null) {
-            val dxNow = xFound - prevX
+            if (xFound != null) {
+                val dxNow = xFound - prevX
 
-            if (abs(dxNow) > 12) {
+                if (abs(dxNow) > 12) {
+                    missCount++
+                    if (missCount > 1) break
+                } else {
+                    out.add(PointF(xFound.toFloat(), y.toFloat()))
+                    prevDx = dxNow
+                    prevX = xFound
+                    missCount = 0
+                }
+            } else {
                 missCount++
                 if (missCount > 1) break
-            } else {
-                out.add(PointF(xFound.toFloat(), y.toFloat()))
-                prevDx = dxNow
-                prevX = xFound
-                missCount = 0
             }
-        } else {
-            missCount++
-            if (missCount > 1) break
+
+            y += yStep
         }
 
-        y += yStep
+        return out
     }
-
-    return out
-}
     private fun traceOuterFromInnerGuide3250(
         edgesU8: ByteArray,
         dirU8: ByteArray? = null,
@@ -1974,7 +1990,7 @@ private fun traceInnerHalf3250(
         profile3250: RimProfile3250
     ): List<PointF> {
         if (innerGuide.isEmpty()) return emptyList()
-        if (profile3250 == RimProfile3250.PERFORADO) return emptyList()
+        if (profile3250 != RimProfile3250.FULL_RIM) return emptyList()
 
         val raw = ArrayList<PointF>()
         var prevGap: Int? = null
@@ -2011,7 +2027,6 @@ private fun traceInnerHalf3250(
 
         return raw.sortedBy { it.y }
     }
-
     private fun fillSmallSideGaps3250(
         pts: List<PointF>,
         stepY: Int,
