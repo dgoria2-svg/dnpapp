@@ -51,7 +51,7 @@ class DnpFaceCaptureActivity : ComponentActivity() {
         const val EXTRA_ORDER_ID = "extra_order_id"
         const val EXTRA_SHAPE_TRACE = "extra_shape_trace"
 
-        private const val FIL_INNER_REDUCTION_TOTAL_MM_3250 = 1
+        private const val FIL_INNER_REDUCTION_TOTAL_MM_3250 = 0
         private const val FIL_OVER_INNER_MM_PER_SIDE_3250 =
             FIL_INNER_REDUCTION_TOTAL_MM_3250 / 2.0 // = 0.25 mm por lado
 

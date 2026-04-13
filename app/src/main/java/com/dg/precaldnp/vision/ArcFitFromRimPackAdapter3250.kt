@@ -8,6 +8,7 @@ import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.roundToInt
 import kotlin.math.sin
 
 object ArcFitAdapter3250 {
@@ -39,6 +40,18 @@ object ArcFitAdapter3250 {
         val expandedByDeg: Double
     )
 
+    data class InnerEvidence3250(
+        val centerYRoi: Float,
+        val bandYMinRoi: Float,
+        val bandYMaxRoi: Float,
+        val nasalXMedianRoi: Float?,
+        val templeXMedianRoi: Float?,
+        val spanMedianPx: Double?,
+        val supportFrac: Float,
+        val continuityFrac: Float,
+        val rowsUsed: Int
+    )
+
     data class ArcFitContract3250(
         val roiPxGlobal: RectF,
         val edgesRoiU8: ByteArray,
@@ -50,27 +63,23 @@ object ArcFitAdapter3250 {
         val originPxRoi: PointF,
         val pxPerMmInitGuess: Double,
 
-        // =========================
-        // VERDAD DEL DETECTOR
-        // =========================
         val bottomAnchorYpxGlobal: Float,
         val bottomAnchorYpxRoi: Float,
 
         val detectorWallsYpxGlobal: Float,
         val detectorWallsYpxRoi: Float,
 
+        val innerBandYMinRoi: Float,
+        val innerBandYMaxRoi: Float,
         val nasalXAtWallsRoi: Float?,
         val templeXAtWallsRoi: Float?,
         val pxPerMmObservedAtWalls: Double?,
 
-        // =========================
-        // VERDAD FACIAL / METRICS
-        // =========================
         val bridgeRowYpxGlobal: Float,
         val bridgeRowYpxRoi: Float,
 
-        // soporte geométrico / debug
         val bottomPolylinePxRoi: List<PointF>,
+        val topPolylinePxRoi: List<PointF>,
         val nasalInnerPolylinePxRoi: List<PointF>,
         val templeInnerPolylinePxRoi: List<PointF>,
         val nasalOuterPolylinePxRoi: List<PointF>?,
@@ -79,6 +88,10 @@ object ArcFitAdapter3250 {
 
         val bottomConfidence: Float,
         val lateralConfidence: Float,
+        val innerCoverageConfidence: Float,
+        val innerSupportFrac: Float,
+        val innerContinuityFrac: Float,
+        val innerRowsUsed: Int,
         val contractConfidence: Float
     )
 
@@ -96,23 +109,26 @@ object ArcFitAdapter3250 {
         pxPerMmObservedOverride: Double? = null,
         bottomAnchorYpxRoiOverride: Float? = null,
         anchorArcExpandDeg: Double = 18.0,
+        filGeo3250: FilGeometry3250.FilGeometryPack3250? = null,
         iters: Int = 2
     ): FilPlaceFromArc3250.Fit3250? {
 
         val r = pack.result
         if (!r.ok) return null
 
-        val contract = buildArcFitContract3250(
-            pack = pack,
-            seed = seed,
-            eyeSideSign3250 = eyeSideSign3250,
-            profile3250 = profile3250,
-            bridgeRowYpxGlobal = bridgeRowYpxGlobal,
-            filHboxMm = filHboxMm,
-            filOverInnerMmPerSide3250 = filOverInnerMmPerSide3250,
-            maskU8Roi = maskU8Roi,
-            anchorArcExpandDeg = anchorArcExpandDeg
-        ) ?: return null
+      val contract = buildArcFitContract3250(
+    pack = pack,
+    seed = seed,
+    eyeSideSign3250 = eyeSideSign3250,
+    profile3250 = profile3250,
+    bridgeRowYpxGlobal = bridgeRowYpxGlobal,
+    filHboxMm = filHboxMm,
+    filVboxMm = filVboxMm,
+    filOverInnerMmPerSide3250 = filOverInnerMmPerSide3250,
+    maskU8Roi = maskU8Roi,
+    anchorArcExpandDeg = anchorArcExpandDeg,
+    filGeo3250 = filGeo3250
+) ?: return null
 
         val pxObs = pxPerMmObservedOverride
             ?.takeIf { it.isFinite() && it > 1e-6 }
@@ -127,17 +143,29 @@ object ArcFitAdapter3250 {
             ?.takeIf { it.isFinite() }
             ?: contract.bottomAnchorYpxRoi
 
+        val arcWindowForFit = chooseBottomWindowForFit3250(contract)
+        val bottomGuideForFit = if (contract.bottomConfidence >= 0.10f) {
+            contract.bottomPolylinePxRoi
+        } else {
+            emptyList()
+        }
+
         Log.d(
             TAG,
             "CONTRACT side=$eyeSideSign3250 profile=$profile3250 " +
                     "bottomAnchorY=${f2(contract.bottomAnchorYpxRoi)} " +
                     "wallsY=${f2(contract.detectorWallsYpxRoi)} " +
+                    "innerBand=[${f2(contract.innerBandYMinRoi)}..${f2(contract.innerBandYMaxRoi)}] " +
                     "bridgeY=${f2(contract.bridgeRowYpxRoi)} " +
-                    "xAtWalls(n/t)=(${f2(contract.nasalXAtWallsRoi)},${f2(contract.templeXAtWallsRoi)}) " +
+                    "xObs(n/t)=(${f2(contract.nasalXAtWallsRoi)},${f2(contract.templeXAtWallsRoi)}) " +
                     "pxObs=${f4(pxObs)} bottomConf=${f3(contract.bottomConfidence)} " +
-                    "latConf=${f3(contract.lateralConfidence)} contractConf=${f3(contract.contractConfidence)} " +
-                    "arcWin=${contract.bottomArcWindow?.let { "${f1(it.fromDeg)}..${f1(it.toDeg)} len=${f1(it.lenDeg)}" } ?: "null"}"
+                    "latConf=${f3(contract.lateralConfidence)} innerConf=${f3(contract.innerCoverageConfidence)} " +
+                    "support=${f3(contract.innerSupportFrac)} cont=${f3(contract.innerContinuityFrac)} rows=${contract.innerRowsUsed} " +
+                    "contractConf=${f3(contract.contractConfidence)} " +
+                    "arcWin=${arcWindowForFit?.let { "${f1(it.fromDeg)}..${f1(it.toDeg)} len=${f1(it.lenDeg)}" } ?: "null"}"
         )
+
+        val detectorWasPartial3250 = contract.bottomPolylinePxRoi.isEmpty()
 
         val fit = FilPlaceFromArc3250.placeFilByArc3250(
             filPtsMm = filPtsMm,
@@ -153,29 +181,26 @@ object ArcFitAdapter3250 {
             pxPerMmObserved = pxObs,
             pxPerMmFixed = null,
             filOverInnerMmPerSide3250 = filOverInnerMmPerSide3250,
-            allowedArcFromDeg = contract.bottomArcWindow?.fromDeg,
-            allowedArcToDeg = contract.bottomArcWindow?.toDeg,
-            excludeDegFrom = if (contract.bottomArcWindow == null) 35.0 else 0.0,
-            excludeDegTo = if (contract.bottomArcWindow == null) 145.0 else 0.0,
+            allowedArcFromDeg = arcWindowForFit?.fromDeg,
+            allowedArcToDeg = arcWindowForFit?.toDeg,
+            excludeDegFrom = if (arcWindowForFit == null) 35.0 else 0.0,
+            excludeDegTo = if (arcWindowForFit == null) 145.0 else 0.0,
             stepDeg = 2.0,
             iters = iters.coerceIn(1, 3),
             rSearchRelLo = 0.70,
             rSearchRelHi = 1.35,
             bottomAnchorYpxRoi = bottomAnchorYpxRoi,
-
-            // ✅ guías reales del detector
-            bottomGuidePxRoi = contract.bottomPolylinePxRoi,
+            bottomGuidePxRoi = bottomGuideForFit,
             detectorNasalGuidePxRoi = contract.nasalInnerPolylinePxRoi,
             detectorTempleGuidePxRoi = contract.templeInnerPolylinePxRoi,
-
+            detectorTopGuidePxRoi = contract.topPolylinePxRoi,
             rimProfile3250 = contract.profile3250,
             bridgeRowYpxGlobal = contract.bridgeRowYpxGlobal,
-            bridgeRowYpxRoi = contract.bridgeRowYpxRoi
+            bridgeRowYpxRoi = contract.bridgeRowYpxRoi,
+            detectorWasPartial3250 = detectorWasPartial3250,
+            filGeometryPack3250 = filGeo3250
         ) ?: return null
 
-        // ============================================================
-        // VALIDACIÓN HARD: contra la fila oficial del detector
-        // ============================================================
         val innerAtWalls = innerAtRowFromFit3250(
             fit = fit,
             roiGlobal = contract.roiPxGlobal,
@@ -185,22 +210,18 @@ object ArcFitAdapter3250 {
         )
 
         if (innerAtWalls != null) {
-            val spanFitPx =
-                (innerAtWalls.innerRightXGlobal - innerAtWalls.innerLeftXGlobal).toDouble()
+            val spanFitPx = (innerAtWalls.innerRightXGlobal - innerAtWalls.innerLeftXGlobal).toDouble()
+            val spanObsPx = if (contract.nasalXAtWallsRoi != null && contract.templeXAtWallsRoi != null) {
+                abs(contract.templeXAtWallsRoi - contract.nasalXAtWallsRoi).toDouble()
+            } else {
+                Double.NaN
+            }
 
-            val spanObsPx =
-                if (contract.nasalXAtWallsRoi != null && contract.templeXAtWallsRoi != null) {
-                    abs(contract.templeXAtWallsRoi - contract.nasalXAtWallsRoi).toDouble()
-                } else {
-                    Double.NaN
-                }
-
-            val relSpanErr =
-                if (spanFitPx.isFinite() && spanObsPx.isFinite() && spanObsPx > 1e-6) {
-                    abs(spanFitPx - spanObsPx) / spanObsPx
-                } else {
-                    Double.NaN
-                }
+            val relSpanErr = if (spanFitPx.isFinite() && spanObsPx.isFinite() && spanObsPx > 1e-6) {
+                abs(spanFitPx - spanObsPx) / spanObsPx
+            } else {
+                Double.NaN
+            }
 
             Log.d(
                 TAG,
@@ -220,9 +241,6 @@ object ArcFitAdapter3250 {
             )
         }
 
-        // ============================================================
-        // VALIDACIÓN SOFT: bridge row facial
-        // ============================================================
         val innerAtBridge = innerAtBridgeRowFromFit3250(
             fit = fit,
             roiGlobal = contract.roiPxGlobal,
@@ -259,54 +277,69 @@ object ArcFitAdapter3250 {
         profile3250: RimProfile3250,
         bridgeRowYpxGlobal: Float,
         filHboxMm: Double,
+        filVboxMm: Double,
         filOverInnerMmPerSide3250: Double,
         maskU8Roi: ByteArray? = null,
-        anchorArcExpandDeg: Double = 18.0
+        anchorArcExpandDeg: Double = 18.0,
+        filGeo3250: FilGeometry3250.FilGeometryPack3250? = null
     ): ArcFitContract3250? {
 
         val r = pack.result
         if (!r.ok) return null
 
         val roi = r.roiPx
+        val filGeoPolylineRoi3250 = filGeo3250?.polylineGlobal3250?.map { p ->
+            PointF(
+                p.x - roi.left,
+                p.y - roi.top
+            )
+        }
 
+        val filGeoTargetCxRoi3250 = filGeo3250?.let { it.targetCxGlobal - roi.left }
+        val filGeoTargetCyRoi3250 = filGeo3250?.let { it.targetCyGlobal - roi.top }
         val bridgeRowYpxRoi = bridgeRowYpxGlobal - roi.top
         if (!bridgeRowYpxRoi.isFinite()) return null
 
         val effectiveOver = effectiveFilOverPerSide3250(profile3250, filOverInnerMmPerSide3250)
         val hboxInnerMm = (filHboxMm - 2.0 * effectiveOver).coerceAtLeast(10.0)
+        val vboxInnerMm = (filVboxMm - 2.0 * effectiveOver).coerceAtLeast(10.0)
 
         val bottomPolylinePxRoi = localPolylineToRoi3250(r.bottomPolylinePx, roi)
+        val topPolylinePxRoi = localPolylineToRoi3250(r.topPolylinePx, roi)
         val nasalInnerPolylinePxRoi = localPolylineToRoi3250(r.nasalInnerPolylinePx, roi)
         val templeInnerPolylinePxRoi = localPolylineToRoi3250(r.templeInnerPolylinePx, roi)
         val nasalOuterPolylinePxRoi = localPolylineToRoi3250Nullable(r.nasalOuterPolylinePx, roi)
         val templeOuterPolylinePxRoi = localPolylineToRoi3250Nullable(r.templeOuterPolylinePx, roi)
 
-        // ============================================================
-        // VERDAD DEL DETECTOR
-        // ============================================================
         val detectorWallsYpxRoi = r.wallsYpx.takeIf { it.isFinite() } ?: bridgeRowYpxRoi
         val detectorWallsYpxGlobal = detectorWallsYpxRoi + roi.top
 
-        val bottomAnchorYpxRoi = r.bottomYpx.takeIf { it.isFinite() }
-            ?: bottomPolylinePxRoi.maxOfOrNull { it.y }
-            ?: return null
-        val bottomAnchorYpxGlobal = bottomAnchorYpxRoi + roi.top
+        val innerEvidence = buildInnerEvidenceFromLaterals3250(
+            nasalInnerPolylineRoi = nasalInnerPolylinePxRoi,
+            templeInnerPolylineRoi = templeInnerPolylinePxRoi,
+            centerY3250 = detectorWallsYpxRoi,
+            hRoi = pack.h,
+            bandHalfPx3250 = max(8f, 0.06f * pack.h.toFloat())
+        )
 
-        val nasalXAtWallsRoi = r.nasalInnerXpx.takeIf { it.isFinite() }
+        val nasalXAtWallsRoi = innerEvidence.nasalXMedianRoi
+            ?: r.nasalInnerXpx.takeIf { it.isFinite() }
             ?: intersectPolylineWithHLineX3250(
                 pts = nasalInnerPolylinePxRoi,
                 y = detectorWallsYpxRoi
             )
 
-        val templeXAtWallsRoi = r.templeInnerXpx.takeIf { it.isFinite() }
+        val templeXAtWallsRoi = innerEvidence.templeXMedianRoi
+            ?: r.templeInnerXpx.takeIf { it.isFinite() }
             ?: intersectPolylineWithHLineX3250(
                 pts = templeInnerPolylinePxRoi,
                 y = detectorWallsYpxRoi
             )
 
-        val observedSpanPx = r.innerWidthPx
-            .takeIf { it.isFinite() && it > 1e-6f }
-            ?.toDouble()
+        val observedSpanPx = innerEvidence.spanMedianPx
+            ?: r.innerWidthPx
+                .takeIf { it.isFinite() && it > 1e-6f }
+                ?.toDouble()
             ?: run {
                 if (nasalXAtWallsRoi != null && templeXAtWallsRoi != null) {
                     abs(templeXAtWallsRoi - nasalXAtWallsRoi).toDouble()
@@ -319,6 +352,19 @@ object ArcFitAdapter3250 {
             .takeIf { it.isFinite() && it > 1e-6 }
             ?.div(hboxInnerMm)
             ?.takeIf { it.isFinite() && it > 1e-6 }
+
+        val bottomAnchorYpxRoi = r.bottomYpx
+            .takeIf { it.isFinite() }
+            ?: bottomPolylinePxRoi.maxOfOrNull { it.y }
+            ?: buildExpectedBottomAnchorYFromSeed3250(
+                seed = seed,
+                vboxInnerMm = vboxInnerMm,
+                pxPerMm = pxPerMmObservedAtWalls ?: seed.pxPerMmInitGuess
+            )
+
+        if (!bottomAnchorYpxRoi.isFinite()) return null
+
+        val bottomAnchorYpxGlobal = bottomAnchorYpxRoi + roi.top
 
         val bottomArcWindow = buildBottomArcWindowFromPolylineRoi3250(
             bottomPolylineRoi = bottomPolylinePxRoi,
@@ -335,14 +381,20 @@ object ArcFitAdapter3250 {
         val lateralConfidence = computeLateralConfidence3250(
             nasalInnerPolylineRoi = nasalInnerPolylinePxRoi,
             templeInnerPolylineRoi = templeInnerPolylinePxRoi,
-            nasalXAtAnchorRoi = nasalXAtWallsRoi,
-            templeXAtAnchorRoi = templeXAtWallsRoi,
-            anchorYpxRoi = detectorWallsYpxRoi,
             hRoi = pack.h
         )
 
-        val contractConfidence =
-            (0.45f * bottomConfidence + 0.55f * lateralConfidence).coerceIn(0f, 1f)
+        val innerCoverageConfidence = computeInnerCoverageConfidence3250(
+            supportFrac = innerEvidence.supportFrac,
+            continuityFrac = innerEvidence.continuityFrac,
+            rowsUsed = innerEvidence.rowsUsed
+        )
+
+        val contractConfidence = (
+                0.15f * bottomConfidence +
+                        0.35f * lateralConfidence +
+                        0.50f * innerCoverageConfidence
+                ).coerceIn(0f, 1f)
 
         return ArcFitContract3250(
             roiPxGlobal = roi,
@@ -361,6 +413,8 @@ object ArcFitAdapter3250 {
             detectorWallsYpxGlobal = detectorWallsYpxGlobal,
             detectorWallsYpxRoi = detectorWallsYpxRoi,
 
+            innerBandYMinRoi = innerEvidence.bandYMinRoi,
+            innerBandYMaxRoi = innerEvidence.bandYMaxRoi,
             nasalXAtWallsRoi = nasalXAtWallsRoi,
             templeXAtWallsRoi = templeXAtWallsRoi,
             pxPerMmObservedAtWalls = pxPerMmObservedAtWalls,
@@ -369,13 +423,19 @@ object ArcFitAdapter3250 {
             bridgeRowYpxRoi = bridgeRowYpxRoi,
 
             bottomPolylinePxRoi = bottomPolylinePxRoi,
+            topPolylinePxRoi = topPolylinePxRoi,
             nasalInnerPolylinePxRoi = nasalInnerPolylinePxRoi,
             templeInnerPolylinePxRoi = templeInnerPolylinePxRoi,
             nasalOuterPolylinePxRoi = nasalOuterPolylinePxRoi,
             templeOuterPolylinePxRoi = templeOuterPolylinePxRoi,
             bottomArcWindow = bottomArcWindow,
+
             bottomConfidence = bottomConfidence,
             lateralConfidence = lateralConfidence,
+            innerCoverageConfidence = innerCoverageConfidence,
+            innerSupportFrac = innerEvidence.supportFrac,
+            innerContinuityFrac = innerEvidence.continuityFrac,
+            innerRowsUsed = innerEvidence.rowsUsed,
             contractConfidence = contractConfidence
         )
     }
@@ -389,11 +449,7 @@ object ArcFitAdapter3250 {
         tolRelXY: Double = 0.10
     ): PxMmPack3250? {
 
-        val effectiveOver = effectiveFilOverPerSide3250(
-            profile3250,
-            filOverInnerMmPerSide3250
-        )
-
+        val effectiveOver = effectiveFilOverPerSide3250(profile3250, filOverInnerMmPerSide3250)
         val overClamped = effectiveOver.coerceIn(0.0, 2.0)
 
         val hboxInnerMm = (filHboxMm - 2.0 * overClamped).coerceAtLeast(10.0)
@@ -503,6 +559,25 @@ object ArcFitAdapter3250 {
         )
     }
 
+    private fun chooseBottomWindowForFit3250(
+        contract: ArcFitContract3250
+    ): ArcWindow3250? {
+        return if (contract.bottomConfidence >= 0.10f) {
+            contract.bottomArcWindow
+        } else {
+            null
+        }
+    }
+
+    private fun buildExpectedBottomAnchorYFromSeed3250(
+        seed: RimArcSeed3250.ArcSeed3250,
+        vboxInnerMm: Double,
+        pxPerMm: Double
+    ): Float {
+        val px = (vboxInnerMm * pxPerMm).toFloat()
+        return seed.originPxRoi.y + 0.42f * px
+    }
+
     private fun computeBottomConfidence3250(
         bottomPolylineRoi: List<PointF>,
         wRoi: Int
@@ -520,37 +595,24 @@ object ArcFitAdapter3250 {
     private fun computeLateralConfidence3250(
         nasalInnerPolylineRoi: List<PointF>,
         templeInnerPolylineRoi: List<PointF>,
-        nasalXAtAnchorRoi: Float?,
-        templeXAtAnchorRoi: Float?,
-        anchorYpxRoi: Float,
         hRoi: Int
     ): Float {
         if (hRoi <= 0) return 0f
 
-        val nScore = polylineAnchorSupport3250(
+        val nScore = polylineCoverage3250(
             pts = nasalInnerPolylineRoi,
-            anchorY = anchorYpxRoi,
             hRoi = hRoi
         )
-
-        val tScore = polylineAnchorSupport3250(
+        val tScore = polylineCoverage3250(
             pts = templeInnerPolylineRoi,
-            anchorY = anchorYpxRoi,
             hRoi = hRoi
         )
 
-        val xCrossScore = when {
-            nasalXAtAnchorRoi != null && templeXAtAnchorRoi != null -> 1f
-            nasalXAtAnchorRoi != null || templeXAtAnchorRoi != null -> 0.5f
-            else -> 0f
-        }
-
-        return (0.40f * nScore + 0.40f * tScore + 0.20f * xCrossScore).coerceIn(0f, 1f)
+        return (0.50f * nScore + 0.50f * tScore).coerceIn(0f, 1f)
     }
 
-    private fun polylineAnchorSupport3250(
+    private fun polylineCoverage3250(
         pts: List<PointF>,
-        anchorY: Float,
         hRoi: Int
     ): Float {
         if (pts.size < 2 || hRoi <= 0) return 0f
@@ -558,15 +620,123 @@ object ArcFitAdapter3250 {
         val sorted = pts.sortedBy { it.y }
         val ySpan = (sorted.last().y - sorted.first().y).coerceAtLeast(0f)
         val spanFrac = (ySpan / hRoi.toFloat()).coerceIn(0f, 1f)
-
-        val yMin = sorted.first().y
-        val yMax = sorted.last().y
-        val crosses = anchorY in yMin..yMax
-
         val nScore = (pts.size / 36f).coerceIn(0f, 1f)
-        val crossScore = if (crosses) 1f else 0f
 
-        return (0.40f * spanFrac + 0.30f * nScore + 0.30f * crossScore).coerceIn(0f, 1f)
+        return (0.60f * spanFrac + 0.40f * nScore).coerceIn(0f, 1f)
+    }
+
+    private fun computeInnerCoverageConfidence3250(
+        supportFrac: Float,
+        continuityFrac: Float,
+        rowsUsed: Int
+    ): Float {
+        val rowScore = (rowsUsed / 18f).coerceIn(0f, 1f)
+        return (
+                0.45f * supportFrac.coerceIn(0f, 1f) +
+                        0.35f * continuityFrac.coerceIn(0f, 1f) +
+                        0.20f * rowScore
+                ).coerceIn(0f, 1f)
+    }
+
+    private fun buildInnerEvidenceFromLaterals3250(
+        nasalInnerPolylineRoi: List<PointF>,
+        templeInnerPolylineRoi: List<PointF>,
+        centerY3250: Float,
+        hRoi: Int,
+        bandHalfPx3250: Float
+    ): InnerEvidence3250 {
+
+        if (hRoi <= 0) {
+            return InnerEvidence3250(
+                centerYRoi = centerY3250,
+                bandYMinRoi = centerY3250,
+                bandYMaxRoi = centerY3250,
+                nasalXMedianRoi = null,
+                templeXMedianRoi = null,
+                spanMedianPx = null,
+                supportFrac = 0f,
+                continuityFrac = 0f,
+                rowsUsed = 0
+            )
+        }
+
+        val yMin = (centerY3250 - bandHalfPx3250).coerceIn(0f, (hRoi - 1).toFloat())
+        val yMax = (centerY3250 + bandHalfPx3250).coerceIn(0f, (hRoi - 1).toFloat())
+
+        val nasalXs = ArrayList<Float>()
+        val templeXs = ArrayList<Float>()
+        val spans = ArrayList<Double>()
+        var rowsUsed = 0
+        var rowsWithBoth = 0
+        var bestRun = 0
+        var curRun = 0
+
+        val y0 = yMin.roundToInt()
+        val y1 = yMax.roundToInt()
+
+        for (yy in y0..y1) {
+            val y = yy.toFloat()
+
+            val xn = intersectPolylineWithHLineX3250(nasalInnerPolylineRoi, y)
+            val xt = intersectPolylineWithHLineX3250(templeInnerPolylineRoi, y)
+
+            if (xn != null) nasalXs.add(xn)
+            if (xt != null) templeXs.add(xt)
+
+            if (xn != null && xt != null) {
+                val span = abs(xt - xn).toDouble()
+                if (span.isFinite() && span > 1e-3) {
+                    spans.add(span)
+                    rowsWithBoth++
+                    curRun++
+                    if (curRun > bestRun) bestRun = curRun
+                } else {
+                    curRun = 0
+                }
+            } else {
+                curRun = 0
+            }
+
+            if (xn != null || xt != null) rowsUsed++
+        }
+
+        val totalRows = max(1, y1 - y0 + 1)
+        val supportFrac = rowsWithBoth.toFloat() / totalRows.toFloat()
+        val continuityFrac = bestRun.toFloat() / totalRows.toFloat()
+
+        return InnerEvidence3250(
+            centerYRoi = centerY3250,
+            bandYMinRoi = yMin,
+            bandYMaxRoi = yMax,
+            nasalXMedianRoi = medianFloat3250(nasalXs),
+            templeXMedianRoi = medianFloat3250(templeXs),
+            spanMedianPx = medianDouble3250(spans),
+            supportFrac = supportFrac.coerceIn(0f, 1f),
+            continuityFrac = continuityFrac.coerceIn(0f, 1f),
+            rowsUsed = rowsUsed
+        )
+    }
+
+    private fun medianFloat3250(v: List<Float>): Float? {
+        if (v.isEmpty()) return null
+        val s = v.sorted()
+        val n = s.size
+        return if (n % 2 == 1) {
+            s[n / 2]
+        } else {
+            0.5f * (s[n / 2 - 1] + s[n / 2])
+        }
+    }
+
+    private fun medianDouble3250(v: List<Double>): Double? {
+        if (v.isEmpty()) return null
+        val s = v.sorted()
+        val n = s.size
+        return if (n % 2 == 1) {
+            s[n / 2]
+        } else {
+            0.5 * (s[n / 2 - 1] + s[n / 2])
+        }
     }
 
     private fun localPolylineToRoi3250(

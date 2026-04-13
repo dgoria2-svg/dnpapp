@@ -17,7 +17,8 @@ import kotlin.math.sqrt
 
 enum class ScalePolicy3250 {
     LOCK_TO_OBSERVED,   // usa la escala observada/detector y no la toca
-    CLAMP_TO_OBSERVED   // deja mover un poco la escala, pero la acota
+    CLAMP_TO_OBSERVED,   // deja mover un poco la escala, pero la acota
+    SHRINK_FROM_OBSERVED
 }
 
 /**
@@ -103,6 +104,7 @@ object FilPlaceFromArc3250 {
         // guías del detector, ROI-local
         detectorNasalGuidePxRoi: List<PointF>? = null,
         detectorTempleGuidePxRoi: List<PointF>? = null,
+        detectorTopGuidePxRoi: List<PointF>? = null,
 
         // política de escala
         scalePolicy3250: ScalePolicy3250 = ScalePolicy3250.LOCK_TO_OBSERVED,
@@ -117,6 +119,9 @@ object FilPlaceFromArc3250 {
         rimProfile3250: RimProfile3250? = null,
         bridgeRowYpxGlobal: Float? = null,
         bridgeRowYpxRoi: Float? = null,
+        // para ref de filgeo
+        detectorWasPartial3250: Boolean = false,
+        filGeometryPack3250: FilGeometry3250.FilGeometryPack3250? = null,
 
         // guardrails internos
         minRunHits3250: Int = 5,
@@ -175,7 +180,10 @@ object FilPlaceFromArc3250 {
             )
 
             if (frac < 0.00015) {
-                Log.w(TAG, "edgeMap demasiado ralo (eff): frac=${"%.5f".format(frac)} (min=0.00015)")
+                Log.w(
+                    TAG,
+                    "edgeMap demasiado ralo (eff): frac=${"%.5f".format(frac)} (min=0.00015)"
+                )
                 return null
             }
         }
@@ -195,11 +203,30 @@ object FilPlaceFromArc3250 {
             detectorNasalGuidePxRoi,
             detectorTempleGuidePxRoi
         )
+        val topGuideLocal = normalizeGuideCloud3250(
+            detectorTopGuidePxRoi
+        )
 
         val allGuidesLocal = normalizeGuideCloud3250(
             detectorNasalGuidePxRoi,
             detectorTempleGuidePxRoi,
             bottomGuideLocal
+        )
+        val upperGuidesLocal = normalizeGuideCloud3250(
+            detectorNasalGuidePxRoi,
+            detectorTempleGuidePxRoi,
+            topGuideLocal
+        )
+        Log.d(
+            TAG,
+            "ARC-MODE sideGuides=${sideGuidesLocal.size} " +
+                    "topGuide=${topGuideLocal.size} " +
+                    "upperGuides=${upperGuidesLocal.size} " +
+                    "bottomGuide=${bottomGuideLocal?.size ?: 0} " +
+                    "allGuides=${allGuidesLocal.size} " +
+                    "scalePolicy=$scalePolicy3250 " +
+                    "maxRelScaleAdj=$maxRelScaleAdj3250 " +
+                    "allowEdgeFallback=$allowEdgeFallbackWhenNoGuide3250"
         )
 
         Log.d(
@@ -226,12 +253,8 @@ object FilPlaceFromArc3250 {
             return null
         }
 
-        // ✅ modelo para SALIDA = OUTER original centrado
-        val polyOutMm = buildCenteredOuterPolyMm(filPtsMm)
-        if (polyOutMm.size < 10) {
-            Log.w(TAG, "polyOutMm.size=${polyOutMm.size} < 10")
-            return null
-        }
+        // ✅ modelo para SALIDA = inner original centrado
+
 
         val pxFixed = pxPerMmFixed
             ?.takeIf { it.isFinite() && it > 1e-6 }
@@ -492,6 +515,18 @@ object FilPlaceFromArc3250 {
                 )
         }
 
+        val hasBottomGuide = !bottomGuideLocal.isNullOrEmpty()
+        val hasSideGuides = sideGuidesLocal.isNotEmpty()
+        val hasTopGuide = topGuideLocal.isNotEmpty()
+        val hasStrongGuides = hasBottomGuide || hasSideGuides || hasTopGuide
+
+        val effectiveScalePolicy3250 = when {
+            pxFixed != null -> ScalePolicy3250.LOCK_TO_OBSERVED
+            detectorWasPartial3250 -> ScalePolicy3250.SHRINK_FROM_OBSERVED
+            hasStrongGuides -> scalePolicy3250
+            else -> ScalePolicy3250.SHRINK_FROM_OBSERVED
+        }
+
         fun solveOnce(
             origin: PointF,
             pxPerMmGuess: Double,
@@ -518,18 +553,23 @@ object FilPlaceFromArc3250 {
                 Int.MAX_VALUE
             }
 
+            val minFrac = when {
+                hasBottomGuide && !hasSideGuides -> 0.35
+                hasStrongGuides -> 0.45
+                else -> 0.55
+            }
+
             val minHitsRequired = if (hasWin) {
-                max(16, (0.55 * allowedSteps.toDouble()).roundToInt())
+                max(12, (minFrac * allowedSteps.toDouble()).roundToInt())
             } else {
                 50
             }
 
             val minPairsRequired = if (hasWin) {
-                max(16, (0.55 * allowedSteps.toDouble()).roundToInt())
+                max(12, (minFrac * allowedSteps.toDouble()).roundToInt())
             } else {
                 50
             }
-
             var idx = 0
             var deg = 0.0
             while (deg < 360.0) {
@@ -567,9 +607,9 @@ object FilPlaceFromArc3250 {
 
                 val guidesForThisRay: List<PointF> =
                     if (requireBottomBand) {
-                        if (allGuidesLocal.isNotEmpty()) allGuidesLocal else sideGuidesLocal
+                        allGuidesLocal.ifEmpty { sideGuidesLocal }
                     } else {
-                        if (sideGuidesLocal.isNotEmpty()) sideGuidesLocal else allGuidesLocal
+                        upperGuidesLocal.ifEmpty { sideGuidesLocal }
                     }
 
                 val guidedHit = guidedHitNearPredicted3250(
@@ -588,7 +628,6 @@ object FilPlaceFromArc3250 {
 
                 val edgeHit = if (
                     guidedHit == null &&
-                    guidesForThisRay.isEmpty() &&
                     allowEdgeFallbackWhenNoGuide3250
                 ) {
                     raycastEdgeBestNearPredictedRadius(
@@ -596,7 +635,7 @@ object FilPlaceFromArc3250 {
                         dirDownX = dirUpImgX,
                         dirDownY = -dirUpImgY,
                         rPredPx = rPredPx,
-                        enforceBottomGuideForThisRay = requireBottomBand
+                        enforceBottomGuideForThisRay = false
                     )?.qPx
                 } else {
                     null
@@ -610,7 +649,7 @@ object FilPlaceFromArc3250 {
                         -(hitQ.y - origin.y)
                     )
                     hits.add(TmpHit(idx, pMm, qRelUp))
-                } else if (requireBottomBand && bottomGuideLocal != null) {
+                } else if (requireBottomBand) {
                     blockedByBottomGuide++
                 }
 
@@ -737,26 +776,28 @@ object FilPlaceFromArc3250 {
 
             val rotDegAbs = abs(Math.toDegrees(theta))
             if (rotDegAbs > 25.0) {
-                Log.w(TAG, "Arc-fit: rotación sospechosa rotDeg=${"%.1f".format(rotDegAbs)}° (max=25°)")
+                Log.w(
+                    TAG,
+                    "Arc-fit: rotación sospechosa rotDeg=${"%.1f".format(rotDegAbs)}° (max=25°)"
+                )
                 return null
             }
-
             val pxFixedLocalClamped = pxPerMmFixedLocal
                 ?.takeIf { it.isFinite() && it > 1e-6 }
                 ?.coerceIn(2.5, 20.0)
 
             val lockedScale = when {
                 pxFixedLocalClamped != null -> pxFixedLocalClamped
-                scalePolicy3250 == ScalePolicy3250.LOCK_TO_OBSERVED && pxObsDbg != null -> pxObsDbg
+                effectiveScalePolicy3250 == ScalePolicy3250.LOCK_TO_OBSERVED && pxObsDbg != null -> pxObsDbg
                 else -> null
             }
 
-            // ✅ escala única global; nunca por-R
             val sScale = if (lockedScale != null) {
                 lockedScale
             } else {
                 var denom = 0.0
                 var numer = 0.0
+
                 for (pp in pairs) {
                     val wgt = pp.weight
                     val px = pp.pMm.x.toDouble() - meanPx
@@ -770,31 +811,34 @@ object FilPlaceFromArc3250 {
                     val qy = pp.qRelUp.y.toDouble() - meanQy
                     numer += wgt * (qx * rx + qy * ry)
                 }
+
                 if (denom <= 1e-12) return null
 
                 var sFree = numer / denom
                 if (!sFree.isFinite() || sFree <= 1e-9) return null
 
-                if (scalePolicy3250 == ScalePolicy3250.CLAMP_TO_OBSERVED && pxObsDbg != null) {
-                    val maxRel = maxRelScaleAdj3250.coerceIn(0.0, 0.10)
-                    val lo = pxObsDbg * (1.0 - maxRel)
-                    val hi = pxObsDbg * (1.0 + maxRel)
+                if (pxObsDbg != null) {
+                    when (effectiveScalePolicy3250) {
+                        ScalePolicy3250.CLAMP_TO_OBSERVED -> {
+                            val maxRel = maxRelScaleAdj3250.coerceIn(0.0, 0.15)
+                            val lo = pxObsDbg * (1.0 - maxRel)
+                            val hi = pxObsDbg * (1.0 + maxRel)
+                            sFree = sFree.coerceIn(lo, hi)
+                        }
 
-                    val unclamped = sFree
-                    sFree = sFree.coerceIn(lo, hi)
+                        ScalePolicy3250.SHRINK_FROM_OBSERVED -> {
+                            val maxRel = maxRelScaleAdj3250.coerceIn(0.03, 0.18)
+                            val lo = pxObsDbg * (1.0 - maxRel)
+                            sFree = sFree.coerceIn(lo, pxObsDbg)
+                        }
 
-                    if (abs(unclamped - sFree) > 1e-6) {
-                        Log.w(
-                            TAG,
-                            "ARC-SCALE CLAMP obs=${fmt2(pxObsDbg)} free=${fmt2(unclamped)} " +
-                                    "used=${fmt2(sFree)} range=[${fmt2(lo)},${fmt2(hi)}]"
-                        )
+                        ScalePolicy3250.LOCK_TO_OBSERVED -> {
+                        }
                     }
                 }
 
                 sFree
             }
-
             val txRel = meanQx - sScale * (ct * meanPx - st2 * meanPy)
             val tyRel = meanQy - sScale * (st2 * meanPx + ct * meanPy)
 
@@ -820,7 +864,10 @@ object FilPlaceFromArc3250 {
 
             val rms = sqrt(err / sumW)
             if (!rms.isFinite() || rms > rmsMaxPx3250) {
-                Log.w(TAG, "ARC-FIT FAIL: rms=${fmt2(rms)} max=${fmt2(rmsMaxPx3250)} used=${pairs.size}")
+                Log.w(
+                    TAG,
+                    "ARC-FIT FAIL: rms=${fmt2(rms)} max=${fmt2(rmsMaxPx3250)} used=${pairs.size}"
+                )
                 return null
             }
 
@@ -841,93 +888,100 @@ object FilPlaceFromArc3250 {
                 )
             }
 
-            // ✅ OUTER colocado (resultado final visible)
-            val placedOut = ArrayList<PointF>(polyOutMm.size)
-            for (p in polyOutMm) {
-                val px = p.x.toDouble()
-                val py = p.y.toDouble()
+            // ✅ inner colocado (resultado final visible)
 
-                val xRelUp = sScale * (ct * px - st2 * py) + txRel
-                val yRelUp = sScale * (st2 * px + ct * py) + tyRel
 
-                placedOut.add(
-                    PointF(
-                        (origin.x + xRelUp).toFloat(),
-                        (origin.y - yRelUp).toFloat()
-                    )
-                )
-            }
 
-            // ✅ el bottom anchor se decide sobre INNER;
-            // el mismo dy se aplica a INNER + OUTER + origin
-            val adj = computeBottomAnchorAdjust3250(
-                placedFit = placedFit,
-                yAnchor = bottomAnchorYpxRoi
-            )
+        // ✅ el bottom anchor se decide sobre INNER;
+        // el mismo dy se aplica a INNER + OUTER + origin
+        val adj = computeBottomAnchorAdjust3250(
+            placedFit = placedFit,
+            yAnchor = bottomAnchorYpxRoi
+        )
 
-            if (adj.clamped) {
-                Log.w(
-                    TAG,
-                    "BottomAnchor clamp: wanted=${fmt2(adj.wanted.toDouble())} " +
-                            "clamped=${fmt2(adj.dy.toDouble())} " +
-                            "(min=${fmt2(adj.dyMin.toDouble())}, max=${fmt2(adj.dyMax.toDouble())})"
-                )
-            }
-
-            if (abs(adj.dy) >= 0.25f) {
-                applyDyToPlaced3250(placedFit, adj.dy)
-                applyDyToPlaced3250(placedOut, adj.dy)
-                newOrigin = PointF(newOrigin.x, newOrigin.y + adj.dy)
-            }
-
-            val allInBounds = placedOut.all { p ->
-                p.x in 0f..(w - 1f) && p.y in 0f..(h - 1f)
-            }
-            if (!allInBounds) {
-                val outCount = placedOut.count { p ->
-                    p.x !in 0f..(w - 1f) || p.y !in 0f..(h - 1f)
-                }
-                Log.w(TAG, "Arc-fit: placed OUTER fuera del ROI. outCount=$outCount/${placedOut.size} w=$w h=$h")
-                return null
-            }
-
-            if (pxObsDbg != null) {
-                val rel = abs(sScale - pxObsDbg) / pxObsDbg
-                Log.d(
-                    TAG,
-                    "GUANTE(DBG) obs=${"%.3f".format(pxObsDbg)} " +
-                            "scale=${"%.3f".format(sScale)} rel=${"%.3f".format(rel)} " +
-                            "rms=${"%.1f".format(rms)} used=${pairs.size} " +
-                            "rotDeg=${"%.1f".format(Math.toDegrees(theta))}"
-                )
-            }
-
-            val placedSpanX = computePlacedSpanXPx3250(placedOut)
-            val pxFromPlacedHbox =
-                if (filHboxMm > 1e-6) placedSpanX / filHboxMm else Double.NaN
-
-            Log.d(
+        if (adj.clamped) {
+            Log.w(
                 TAG,
-                "ARC-HBOX placedSpanX=${fmt2(placedSpanX)} " +
-                        "filHboxMm=${fmt2(filHboxMm)} pxFromPlacedHbox=${fmt2(pxFromPlacedHbox)} " +
-                        "scaleUsed=${fmt2(sScale)}"
-            )
-
-            return FitInternal(
-                placedPxRoi = placedOut,   // ✅ devolver OUTER final
-                pxPerMm = sScale,
-                rotDeg = Math.toDegrees(theta),
-                originUpdated = newOrigin,
-                rmsPx = rms,
-                used = pairs.size,
-                rimProfile3250 = rimProfile3250,
-                bridgeRowYpxGlobal = bridgeRowYpxGlobal,
-                bridgeRowYpxRoi = bridgeRowYpxRoi ?: bottomAnchorYpxRoi
+                "BottomAnchor clamp: wanted=${fmt2(adj.wanted.toDouble())} " +
+                        "clamped=${fmt2(adj.dy.toDouble())} " +
+                        "(min=${fmt2(adj.dyMin.toDouble())}, max=${fmt2(adj.dyMax.toDouble())})"
             )
         }
 
-        var origin = PointF(originPxRoi.x, originPxRoi.y)
-        var guess = pxPerMmInitGuess
+        val dyBottomSoft =  adj.dy.coerceIn(-8f, 8f)
+
+        if (abs(dyBottomSoft) >= 0.25f) {
+            applyDyToPlaced3250(placedFit, dyBottomSoft)
+            newOrigin = PointF(newOrigin.x, newOrigin.y + dyBottomSoft)
+
+            if (abs(dyBottomSoft - adj.dy) > 0.25f) {
+                Log.w(
+                    TAG,
+                    "BottomAnchor soft-clamp: wanted=${fmt2(adj.dy.toDouble())} " +
+                            "used=${fmt2(dyBottomSoft.toDouble())}"
+                )
+            }
+        }
+        val allInBounds = placedFit.all { p ->
+            p.x in 0f..(w - 1f) && p.y in 0f..(h - 1f)
+        }
+        if (!allInBounds) {
+            val outCount = placedFit.count { p ->
+                p.x !in 0f..(w - 1f) || p.y !in 0f..(h - 1f)
+            }
+            Log.w(
+                TAG,
+                "Arc-fit: placed INNER fuera del ROI. outCount=$outCount/${placedFit.size} w=$w h=$h"
+            )
+            return null
+        }
+
+        val placedSpanX = computePlacedSpanXPx3250(placedFit)
+        val pxFromPlacedHbox =
+            if (filHboxMm > 1e-6) placedSpanX / filHboxMm else Double.NaN
+
+        Log.d(
+            TAG,
+            "ARC-HBOX placedSpanX=${fmt2(placedSpanX)} " +
+                    "filHboxMm=${fmt2(filHboxMm)} pxFromPlacedHbox=${fmt2(pxFromPlacedHbox)} " +
+                    "scaleUsed=${fmt2(sScale)}"
+        )
+
+        return FitInternal(
+            placedPxRoi = placedFit,
+            pxPerMm = sScale,
+            rotDeg = Math.toDegrees(theta),
+            originUpdated = newOrigin,
+            rmsPx = rms,
+            used = pairs.size,
+            rimProfile3250 = rimProfile3250,
+            bridgeRowYpxGlobal = bridgeRowYpxGlobal,
+            bridgeRowYpxRoi = bridgeRowYpxRoi ?: origin.y
+        )
+    }
+        val filGeoPxPerMm3250 = filGeometryPack3250?.pxPerMmUsed
+            ?.toDouble()
+            ?.takeIf { it.isFinite() && it > 1e-6 }
+
+        val filGeoOriginPxRoi3250 = filGeometryPack3250?.let { pack ->
+            PointF(
+                pack.targetCxGlobal - pack.roiGlobal.left,
+                pack.targetCyGlobal - pack.roiGlobal.top
+            )
+        }
+
+        var origin = if (detectorWasPartial3250 && filGeoOriginPxRoi3250 != null) {
+            PointF(filGeoOriginPxRoi3250.x, filGeoOriginPxRoi3250.y)
+        } else {
+            PointF(originPxRoi.x, originPxRoi.y)
+        }
+
+        var guess = when {
+            detectorWasPartial3250 && pxObsDbg != null -> pxObsDbg
+            filGeoPxPerMm3250 != null -> filGeoPxPerMm3250
+            else -> pxPerMmInitGuess
+        }
+
         var thetaGuessRad = 0.0
 
         var last: FitInternal? = null
@@ -992,51 +1046,20 @@ object FilPlaceFromArc3250 {
 
         val sX = (innerW / filHboxMm).coerceIn(0.80, 1.00)
         val sY = (innerH / filVboxMm).coerceIn(0.80, 1.00)
+        val sUniform = ((sX + sY) * 0.5).coerceIn(0.80, 1.00)
 
         val poly = ArrayList<PointF>(filPtsMm.size)
         for (p in filPtsMm) {
             poly.add(
                 PointF(
-                    ((p.x.toDouble() - cx) * sX).toFloat(),
-                    ((p.y.toDouble() - cy) * sY).toFloat()
+                    ((p.x.toDouble() - cx) * sUniform).toFloat(),
+                    ((p.y.toDouble() - cy) * sUniform).toFloat()
                 )
             )
         }
         return poly
     }
 
-    // ✅ OUTER original centrado, sin shrink por filOver
-    private fun buildCenteredOuterPolyMm(
-        filPtsMm: List<PointF>
-    ): ArrayList<PointF> {
-        if (filPtsMm.isEmpty()) return arrayListOf()
-
-        var minX = Double.POSITIVE_INFINITY
-        var maxX = Double.NEGATIVE_INFINITY
-        var minY = Double.POSITIVE_INFINITY
-        var maxY = Double.NEGATIVE_INFINITY
-
-        for (p in filPtsMm) {
-            minX = min(minX, p.x.toDouble())
-            maxX = max(maxX, p.x.toDouble())
-            minY = min(minY, p.y.toDouble())
-            maxY = max(maxY, p.y.toDouble())
-        }
-
-        val cx = (minX + maxX) * 0.5
-        val cy = (minY + maxY) * 0.5
-
-        val poly = ArrayList<PointF>(filPtsMm.size)
-        for (p in filPtsMm) {
-            poly.add(
-                PointF(
-                    (p.x.toDouble() - cx).toFloat(),
-                    (p.y.toDouble() - cy).toFloat()
-                )
-            )
-        }
-        return poly
-    }
 
     private fun normalizeBottomGuide3250(
         pts: List<PointF>?
@@ -1166,7 +1189,6 @@ object FilPlaceFromArc3250 {
         val ny = radialDownY / nLen
 
         val tx = -ny
-        val ty = nx
 
         var best: PointF? = null
         var bestScore = Float.POSITIVE_INFINITY
@@ -1176,7 +1198,7 @@ object FilPlaceFromArc3250 {
             val dy = g.y - predY
 
             val nDist = abs(dx * nx + dy * ny)
-            val tDist = abs(dx * tx + dy * ty)
+            val tDist = abs(dx * tx + dy * nx)
 
             if (nDist > normalTolPx) continue
             if (tDist > tangentialTolPx) continue

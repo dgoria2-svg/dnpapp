@@ -16,6 +16,10 @@ data class RimDetectionResult(
     val probeYpx: Float,
     val topYpx: Float,
     val bottomYpx: Float,
+    val topMinAllowedYpx: Float = Float.NaN,
+    val topSearchMinYpx: Float = Float.NaN,
+    val expectedTopYpx: Float = Float.NaN,
+    val expectedTopTolPx: Float = 0f,
 
     // fila donde se midieron L/R (yWalls)
     val wallsYpx: Float,

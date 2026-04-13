@@ -8,6 +8,7 @@ import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.PointF
+import android.graphics.RectF
 import android.net.Uri
 import android.os.SystemClock
 import android.provider.MediaStore
@@ -43,8 +44,8 @@ object DebugDump3250 {
     }
 
     /**
-     * Dump actual/legacy: detector usado.
-     * Mantengo compatibilidad.
+     * Dump legacy/compat:
+     * detector usado y, opcionalmente, un FIL superpuesto.
      */
     fun dumpRimUsed3250(
         context: Context,
@@ -65,8 +66,9 @@ object DebugDump3250 {
             edgeBmp = overlayBmp,
             res = usedPack.result,
             filPtsGlobal800 = filPtsGlobal800,
-            filLabel = if (filPtsGlobal800 != null) "FIL" else null,
-            filColor = if (filPtsGlobal800 != null) FIL_COLOR_DETECTOR else null
+            filLabel = if (filPtsGlobal800.isNullOrEmpty()) null else "FIL USED",
+            filColor = if (filPtsGlobal800.isNullOrEmpty()) null else FIL_COLOR_DETECTOR,
+            drawGuides = true
         )
 
         saveBitmapToPictures(
@@ -78,18 +80,20 @@ object DebugDump3250 {
 
     /**
      * NUEVO:
-     * Detector usado + FIL construido con la verdad del detector/rimBase.
+     * Dump del detector por separado.
+     * Acepta opcionalmente un FIL "detector" para mantener compatibilidad
+     * con la llamada actual del pipeline.
      */
     fun dumpRimDetectorUsed3250(
         context: Context,
         usedPack: RimDetectPack3250?,
         debugTag: String,
-        filPtsDetectorGlobal800: List<PointF>?,
+        filPtsDetectorGlobal800: List<PointF>? = null,
         minIntervalMs: Long = 1200L
     ) {
-        if (usedPack == null || filPtsDetectorGlobal800.isNullOrEmpty()) return
+        if (usedPack == null) return
 
-        val key = "RIM_FILDET_$debugTag"
+        val key = "RIM_DETECTOR_$debugTag"
         if (!allow(key, minIntervalMs)) return
 
         val overlayBmp = edgeU8ToBitmap(usedPack.edges, usedPack.w, usedPack.h)
@@ -99,21 +103,22 @@ object DebugDump3250 {
             edgeBmp = overlayBmp,
             res = usedPack.result,
             filPtsGlobal800 = filPtsDetectorGlobal800,
-            filLabel = FIL_LABEL_DETECTOR,
-            filColor = FIL_COLOR_DETECTOR
+            filLabel = if (filPtsDetectorGlobal800.isNullOrEmpty()) null else FIL_LABEL_DETECTOR,
+            filColor = if (filPtsDetectorGlobal800.isNullOrEmpty()) null else FIL_COLOR_DETECTOR,
+            drawGuides = true
         )
 
         saveBitmapToPictures(
             context = context,
             bmp = overlayBmp,
-            baseName = "RIM_${debugTag}_FILDET_OVERLAY"
+            baseName = "RIM_${debugTag}_DETECTOR_ONLY"
         )
     }
 
     /**
      * NUEVO:
-     * Detector usado + FIL final que vino de ArcFit.
-     * Esta es la que vamos a llamar después de ArcFit.
+     * Dump del ArcFit por separado.
+     * Base = edge map ROI + FIL final del ArcFit.
      */
     fun dumpRimArcFitUsed3250(
         context: Context,
@@ -130,9 +135,9 @@ object DebugDump3250 {
         val overlayBmp = edgeU8ToBitmap(usedPack.edges, usedPack.w, usedPack.h)
             .copy(Bitmap.Config.ARGB_8888, true)
 
-        drawRimOverlayOnEdgeBitmap(
+        drawArcFitOnlyOnEdgeBitmap3250(
             edgeBmp = overlayBmp,
-            res = usedPack.result,
+            roiPx = usedPack.result.roiPx,
             filPtsGlobal800 = filPtsArcFitGlobal800,
             filLabel = FIL_LABEL_ARCFIT,
             filColor = FIL_COLOR_ARCFIT
@@ -141,13 +146,13 @@ object DebugDump3250 {
         saveBitmapToPictures(
             context = context,
             bmp = overlayBmp,
-            baseName = "RIM_${debugTag}_ARCFIT_OVERLAY"
+            baseName = "RIM_${debugTag}_ARCFIT_ONLY"
         )
     }
 
     /**
      * NUEVO:
-     * Si en algún punto querés emitir ambas en una sola llamada.
+     * Emite ambos dumps, separados.
      */
     fun dumpRimDetectorAndArcFit3250(
         context: Context,
@@ -176,7 +181,7 @@ object DebugDump3250 {
 
     /**
      * Compatibilidad con tu llamada actual del pipeline.
-     * Internamente sigue dibujando SOLO el USED legacy.
+     * Internamente conserva el comportamiento legacy.
      */
     @Suppress("UNUSED_PARAMETER")
     fun dumpRimRawNormAndUsed3250(
@@ -199,19 +204,21 @@ object DebugDump3250 {
 
     /**
      * Base = edge map ROI del pack usado.
-     * En este modo de depuración dibuja SOLO:
+     * En este modo dibuja:
      * - bottom final
      * - marcas verticales inner L/R
      * - arcos inner/outer si existen
+     * - FIL opcional si se pasa (legacy o detector separado)
      *
-     * No dibuja FIL, probe, walls ni seed.
+     * drawGuides=true agrega probe/walls/seed/top.
      */
     private fun drawRimOverlayOnEdgeBitmap(
         edgeBmp: Bitmap,
         res: RimDetectionResult,
         filPtsGlobal800: List<PointF>? = null,
         filLabel: String? = null,
-        filColor: Int? = null
+        filColor: Int? = null,
+        drawGuides: Boolean = false
     ) {
         val c = Canvas(edgeBmp)
 
@@ -219,35 +226,98 @@ object DebugDump3250 {
         val y0 = res.roiPx.top
 
         fun toLocalX(xGlobal: Float): Float = xGlobal - x0
+        fun toLocalY(yGlobal: Float): Float = yGlobal - y0
 
-        // Mantengo params por compatibilidad de firma.
-        // En este modo de depuración no se dibuja FIL.
-        val _unusedFilPts = filPtsGlobal800
-        val _unusedFilLabel = filLabel
-        val _unusedFilColor = filColor
+        fun drawDebugY(
+            yGlobalPx: Float,
+            label: String,
+            paintLine: Paint,
+            paintText: Paint
+        ) {
+            if (!yGlobalPx.isFinite()) return
+
+            val yLocal = toLocalY(yGlobalPx)
+            if (!yLocal.isFinite()) return
+
+            c.drawLine(0f, yLocal, edgeBmp.width.toFloat(), yLocal, paintLine)
+            c.drawText(
+                "$label g=${"%.1f".format(yGlobalPx)} l=${"%.1f".format(yLocal)}",
+                12f,
+                yLocal - 6f,
+                paintText
+            )
+        }
 
         val pBottom = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             style = Paint.Style.STROKE
             strokeWidth = max(2.0f, edgeBmp.width * 0.0030f)
-            color = Color.argb(145, 0, 255, 80)   // verde suave
+            color = Color.argb(145, 0, 255, 80)
         }
 
         val pInnerV = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             style = Paint.Style.STROKE
             strokeWidth = max(1.3f, edgeBmp.width * 0.0021f)
-            color = Color.argb(85, 0, 229, 255)   // cian muy suave
+            color = Color.argb(85, 0, 229, 255)
         }
 
         val pInnerArc = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             style = Paint.Style.STROKE
             strokeWidth = max(1.8f, edgeBmp.width * 0.0027f)
-            color = Color.argb(150, 0, 229, 255)  // cian suave
+            color = Color.argb(150, 0, 229, 255)
         }
 
         val pOuterArc = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             style = Paint.Style.STROKE
             strokeWidth = max(1.5f, edgeBmp.width * 0.0023f)
-            color = Color.argb(105, 255, 152, 0)  // naranja suave
+            color = Color.argb(105, 255, 152, 0)
+        }
+
+        val pProbe = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.STROKE
+            strokeWidth = max(1.4f, edgeBmp.width * 0.0021f)
+            color = Color.argb(170, 255, 235, 59)
+        }
+
+        val pWalls = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.STROKE
+            strokeWidth = max(1.2f, edgeBmp.width * 0.0019f)
+            color = Color.argb(150, 121, 85, 72)
+        }
+
+        val pSeed = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.STROKE
+            strokeWidth = max(1.6f, edgeBmp.width * 0.0022f)
+            color = Color.argb(180, 186, 104, 200)
+        }
+
+        val pTop = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.STROKE
+            strokeWidth = max(2.2f, edgeBmp.width * 0.0032f)
+            color = Color.argb(180, 186, 104, 200)
+        }
+
+        val pTopMin = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.STROKE
+            strokeWidth = max(1.6f, edgeBmp.width * 0.0022f)
+            color = Color.argb(210, 255, 0, 255)
+        }
+
+        val pTopSearchMin = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.STROKE
+            strokeWidth = max(1.6f, edgeBmp.width * 0.0022f)
+            color = Color.argb(210, 0, 255, 255)
+        }
+
+        val pExpectedTop = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.STROKE
+            strokeWidth = max(1.8f, edgeBmp.width * 0.0025f)
+            color = Color.argb(220, 255, 235, 59)
+        }
+
+        val pExpectedBand = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.STROKE
+            strokeWidth = max(1.2f, edgeBmp.width * 0.0018f)
+            color = Color.argb(170, 255, 255, 255)
         }
 
         val pWhite = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -257,9 +327,43 @@ object DebugDump3250 {
             setShadowLayer(5f, 0f, 0f, Color.BLACK)
         }
 
-        // =========================
-        // Detector puro
-        // =========================
+        if (drawGuides) {
+            val probeY = toLocalY(res.probeYpx)
+            if (probeY.isFinite()) {
+                c.drawLine(0f, probeY, edgeBmp.width.toFloat(), probeY, pProbe)
+                c.drawText("probe", 12f, probeY - 6f, pWhite)
+            }
+
+            val wallsY = toLocalY(res.wallsYpx)
+            if (wallsY.isFinite()) {
+                c.drawLine(0f, wallsY, edgeBmp.width.toFloat(), wallsY, pWalls)
+                c.drawText("walls", 12f, wallsY - 6f, pWhite)
+            }
+
+            val seedX = toLocalX(res.seedXpx)
+            if (seedX.isFinite()) {
+                c.drawLine(seedX, 0f, seedX, edgeBmp.height.toFloat(), pSeed)
+                c.drawText("seed", seedX + 6f, 18f, pWhite)
+            }
+
+            val topY = toLocalY(res.topYpx)
+            if (topY.isFinite()) {
+                c.drawLine(0f, topY, edgeBmp.width.toFloat(), topY, pTop)
+                c.drawText("topUsed", 12f, topY - 6f, pWhite)
+            }
+
+            drawDebugY(res.topMinAllowedYpx, "topMin", pTopMin, pWhite)
+            drawDebugY(res.topSearchMinYpx, "topSearchMin", pTopSearchMin, pWhite)
+            drawDebugY(res.expectedTopYpx, "expTop", pExpectedTop, pWhite)
+
+            val expTopGlobal = res.expectedTopYpx
+            if (expTopGlobal.isFinite() && res.expectedTopTolPx > 0f) {
+                val yA = expTopGlobal - res.expectedTopTolPx
+                val yB = expTopGlobal + res.expectedTopTolPx
+                drawDebugY(yA, "expTop-tol-", pExpectedBand, pWhite)
+                drawDebugY(yB, "expTop-tol+", pExpectedBand, pWhite)
+            }
+        }
 
         drawPolylineGlobal(
             canvas = c,
@@ -267,6 +371,14 @@ object DebugDump3250 {
             x0 = x0,
             y0 = y0,
             paint = pBottom
+        )
+
+        drawPolylineGlobal(
+            canvas = c,
+            ptsGlobal = res.topPolylinePx,
+            x0 = x0,
+            y0 = y0,
+            paint = pTop
         )
 
         drawPolylineGlobal(
@@ -311,6 +423,32 @@ object DebugDump3250 {
             c.drawLine(innerR, 0f, innerR, edgeBmp.height.toFloat(), pInnerV)
         }
 
+        if (!filPtsGlobal800.isNullOrEmpty()) {
+            val pFil = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                style = Paint.Style.STROKE
+                strokeWidth = max(2.1f, edgeBmp.width * 0.0032f)
+                color = filColor ?: FIL_COLOR_DETECTOR
+            }
+
+            drawPolylineGlobal(
+                canvas = c,
+                ptsGlobal = filPtsGlobal800,
+                x0 = x0,
+                y0 = y0,
+                paint = pFil
+            )
+
+            if (!filLabel.isNullOrBlank()) {
+                c.drawText(
+                    filLabel,
+                    12f,
+                    max(18f, pWhite.textSize + 10f),
+                    pWhite
+                )
+            }
+        }
+
+        val topCount = res.topPolylinePx?.size ?: 0
         val botCount = res.bottomPolylinePx?.size ?: 0
         val nIn = res.nasalInnerPolylinePx?.size ?: 0
         val tIn = res.templeInnerPolylinePx?.size ?: 0
@@ -318,7 +456,7 @@ object DebugDump3250 {
         val tOut = res.templeOuterPolylinePx?.size ?: 0
 
         val dbgTxt =
-            "bot=$botCount nIn=$nIn tIn=$tIn nOut=$nOut tOut=$tOut conf=${"%.3f".format(res.confidence)}"
+            "top=$topCount bot=$botCount nIn=$nIn tIn=$tIn nOut=$nOut tOut=$tOut conf=${"%.3f".format(res.confidence)}"
 
         c.drawText(
             dbgTxt,
@@ -385,13 +523,15 @@ object DebugDump3250 {
         }
 
         var os: OutputStream? = null
+        var ok = false
+
         try {
             os = resolver.openOutputStream(uri)
             if (os == null) {
                 Log.w(TAG, "openOutputStream null")
-                return null
+            } else {
+                ok = bmp.compress(Bitmap.CompressFormat.PNG, 100, os)
             }
-            bmp.compress(Bitmap.CompressFormat.PNG, 100, os)
         } catch (t: Throwable) {
             Log.e(TAG, "saveBitmapToPictures error", t)
         } finally {
@@ -399,6 +539,14 @@ object DebugDump3250 {
                 os?.close()
             } catch (_: Throwable) {
             }
+        }
+
+        if (!ok) {
+            try {
+                resolver.delete(uri, null, null)
+            } catch (_: Throwable) {
+            }
+            return null
         }
 
         val done = ContentValues().apply {
@@ -409,6 +557,7 @@ object DebugDump3250 {
         Log.d(TAG, "Saved debug png: $name")
         return uri
     }
+
     fun dumpEdgeFinalWithMask3250(
         context: Context,
         edgeFinalU8: ByteArray?,
@@ -473,6 +622,7 @@ object DebugDump3250 {
         bmp.setPixels(px, 0, w, 0, 0, w, h)
         return bmp
     }
+
     fun dumpGateOverGray3250(
         context: Context,
         grayRawU8: ByteArray?,
@@ -514,6 +664,57 @@ object DebugDump3250 {
             context = context,
             bmp = bmp,
             baseName = "EDGE_GATE_OVER_GRAY_${debugTag}"
+        )
+    }
+
+    private fun drawArcFitOnlyOnEdgeBitmap3250(
+        edgeBmp: Bitmap,
+        roiPx: RectF,
+        filPtsGlobal800: List<PointF>,
+        filLabel: String? = null,
+        filColor: Int = FIL_COLOR_ARCFIT
+    ) {
+        if (filPtsGlobal800.isEmpty()) return
+
+        val c = Canvas(edgeBmp)
+        val x0 = roiPx.left
+        val y0 = roiPx.top
+
+        val pFil = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.STROKE
+            strokeWidth = max(2.4f, edgeBmp.width * 0.0036f)
+            color = filColor
+        }
+
+        val pWhite = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.WHITE
+            textSize = max(13f, edgeBmp.width * 0.020f)
+            style = Paint.Style.FILL
+            setShadowLayer(5f, 0f, 0f, Color.BLACK)
+        }
+
+        drawPolylineGlobal(
+            canvas = c,
+            ptsGlobal = filPtsGlobal800,
+            x0 = x0,
+            y0 = y0,
+            paint = pFil
+        )
+
+        if (!filLabel.isNullOrBlank()) {
+            c.drawText(
+                filLabel,
+                12f,
+                max(18f, pWhite.textSize + 10f),
+                pWhite
+            )
+        }
+
+        c.drawText(
+            "pts=${filPtsGlobal800.size}",
+            12f,
+            edgeBmp.height - pWhite.textSize - 12f,
+            pWhite
         )
     }
 }

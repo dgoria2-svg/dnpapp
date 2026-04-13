@@ -1,1467 +1,576 @@
-@file:Suppress("SameParameterValue")
+@file:Suppress("SameParameterValue", "MemberVisibilityCanBePrivate")
 
 package com.dg.precaldnp.vision
 
 import android.content.ContentValues
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.PointF
+import android.graphics.Rect
 import android.net.Uri
 import android.provider.MediaStore
 import android.util.Log
-import androidx.core.graphics.createBitmap
 import org.opencv.android.Utils
-import org.opencv.core.Core
 import org.opencv.core.CvType
 import org.opencv.core.Mat
+import org.opencv.core.Point
 import org.opencv.core.Size
 import org.opencv.imgproc.Imgproc
 import java.io.OutputStream
 import java.util.Locale
-import kotlin.math.abs
+import kotlin.math.atan2
 import kotlin.math.max
-import kotlin.math.min
 import kotlin.math.roundToInt
-import kotlin.math.sqrt
 
 object EdgeMapBuilder3250 {
 
     private const val TAG = "EdgeMapBuilder3250"
 
-    private const val EDGE_THR_FRAC = 0.16f
-    private const val EDGE_THR_MIN = 22
-    private const val P95_CAP_K = 1.05f
-
-    private const val TAN22_NUM = 41
-    private const val TAN22_DEN = 100
-    private const val TAN67_NUM = 241
-    private const val TAN67_DEN = 100
-
-    private const val DEBUG_MAX_DIM_PX = 1600
-
-    private const val RIBBON_INNER_ERODE_PX = 8
-    private const val RIBBON_OUTER_DILATE_PX = 12
-    private const val RIBBON_THIN_COVERAGE_FRAC = 0.08f
-    private const val RIBBON_CLOSE_RADIUS_PX = 2
-
-    private const val BLUR_GRAY_K = 5
-    private const val BLUR_SAT_K = 5
-    private const val BLUR_GATE_K = 15
-    private const val BLUR_TENSOR_K = 11
-
-    private const val CANNY_GRAY_LOW = 36.0
-    private const val CANNY_GRAY_HIGH = 96.0
-
-    private const val CANNY_SAT_LOW = 28.0
-    private const val CANNY_SAT_HIGH = 84.0
-
-    private const val SCORE_W_GRAY_NORMAL = 0.34f
-    private const val SCORE_W_SAT_NORMAL = 0.16f
-    private const val SCORE_W_GRAY_CANNY = 0.14f
-    private const val SCORE_W_SAT_CANNY = 0.08f
-    private const val SCORE_W_COHERENCY = 0.14f
-    private const val SCORE_W_GATE_NORMAL = 0.10f
-    private const val SCORE_W_BOTTOM_BONUS = 0.04f
-
-    private const val PENALTY_W_GRAY_TANG = 0.10f
-    private const val PENALTY_W_SAT_TANG = 0.06f
-
-    private const val ALIGN_FLOOR = 0.12f
-    private const val GATE_CONF_FLOOR = 0.25f
-    private const val COH_FLOOR = 0.35f
-
-    private const val BOTTOM_SEED_FRAC_START = 0.56f
-    private const val BOTTOM_THR_RELAX_MAX = 20
-
-    private const val BRIDGE_MAX_GAP_PX = 2
-    private const val FINAL_CLOSE_RADIUS_PX = 1
-    private const val FINAL_DILATE_RADIUS_PX = 0
-
-    private const val MASK_DILATE_RADIUS_PX = 0
-
-    data class EdgeStats(
-        val maxScore: Float,
-        val p95Score: Float,
-        val thr: Float,
-        val nnz: Int,
-        val density: Float,
-        val bandPx: Float,
-        val samples: Int,
-        val topKillY: Int,
-        val maskedN: Int,
-        val maskedFrac: Float,
-        val maskDilateR: Int
+    data class RoiEdgePack3250(
+        val roiRectGlobal3250: Rect,
+        val w3250: Int,
+        val h3250: Int,
+        val grayU83250: ByteArray,
+        val scoreU83250: ByteArray,
+        val hScoreU83250: ByteArray,
+        val vScoreU83250: ByteArray,
+        val cannyU83250: ByteArray,
+        val edgeRawU83250: ByteArray,
+        val edgePostU83250: ByteArray,
+        val dirU83250: ByteArray,
+        val thrScore3250: Int,
+        val pctlScore3250: Double,
+        val nonZeroRaw3250: Int,
+        val nonZeroPost3250: Int
     )
-
-    class EdgeMapOut3250(
-        val w: Int,
-        val h: Int,
-        val edgesU8: ByteArray,
-        val dirU8: ByteArray,
-        val stats: EdgeStats
+    data class Params3250(
+        val blurK3250: Int = 3,
+        val scharrWeight3250: Double = 1.0,
+        val hvSuppressCross3250: Double = 0.60,
+        val cannyLowFrac3250: Double = 0.55,
+        val cannyHighFrac3250: Double = 1.00,
+        val scorePercentile3250: Double = 95.0,
+        val scoreMinFrac3250: Double = 0.12,
+        val closeRadius3250: Int = 1,
+        val dilateIters3250: Int = 1,
+        val bridgeGapPx3250: Int = 5,
+        val bridgeMinRunPx3250: Int = 2,
+        val debugSaveToGallery3250: Boolean = false
     )
-
-    private data class EdgeCoreBuild3250(
-        val out: EdgeMapOut3250,
-        val gateMaskU8: ByteArray?,
-        val ribbonMaskU8: ByteArray?,
-        val scoreU8: ByteArray?,
-        val projNormalU8: ByteArray?,
-        val tangentialU8: ByteArray?,
-        val coherencyU8: ByteArray?,
-        val gateNormalU8: ByteArray?
-    )
-
-    fun buildFullFrameEdgePackFromBitmap3250(
+    fun buildRoiEdgePackFromBitmap3250(
+        ctx: Context?,
         stillBmp: Bitmap,
-        borderKillPx: Int,
-        topKillY: Int = 0,
-        maskFull: ByteArray? = null,
-        regionMaskFull3250: ByteArray? = null,
-        forceRegion3250: Boolean = false,
-        debugTag: String = "FULL",
-        statsOut: ((EdgeStats) -> Unit)? = null,
-        ctx: Context? = null,
-        debugSaveToGallery3250: Boolean = false,
-        debugAlsoSaveGray3250: Boolean = false
-    ): EdgeMapOut3250 {
-        val w = stillBmp.width
-        val h = stillBmp.height
-
-        if (w <= 0 || h <= 0) {
-            val st = EdgeStats(
-                maxScore = 0f,
-                p95Score = 0f,
-                thr = 0f,
-                nnz = 0,
-                density = 0f,
-                bandPx = 0f,
-                samples = 0,
-                topKillY = topKillY,
-                maskedN = 0,
-                maskedFrac = 0f,
-                maskDilateR = 0
-            )
-            return EdgeMapOut3250(0, 0, ByteArray(0), ByteArray(0), st)
+        roiRectGlobal3250: Rect,
+        params3250: Params3250 = Params3250(),
+        debugTag3250: String = "ROI",
+        filGeometryPtsGlobal3250: List<PointF>? = null
+    ): RoiEdgePack3250 {
+        val roi = clampRect3250(roiRectGlobal3250, stillBmp.width, stillBmp.height)
+        require(roi.width() > 4 && roi.height() > 4) {
+            "EDGE3250: ROI invalido ${roi.width()}x${roi.height()}"
         }
 
-        val grayRaw = bitmapToGrayU83250(stillBmp)
-
-        val build = buildFullFrameEdgePackCoreFromBitmap3250(
-            stillBmp = stillBmp,
-            borderKillPx = borderKillPx,
-            topKillY = topKillY,
-            maskFull = maskFull,
-            regionMaskFull3250 = regionMaskFull3250,
-            forceRegion3250 = forceRegion3250,
-            debugTag = debugTag,
-            statsOut = statsOut
+        val roiBmp = Bitmap.createBitmap(
+            stillBmp,
+            roi.left,
+            roi.top,
+            roi.width(),
+            roi.height()
         )
-
-        if (debugSaveToGallery3250 && ctx != null) {
-            try {
-                debugDumpEdgeTriplet3250(
-                    ctx = ctx,
-                    w = w,
-                    h = h,
-                    edgesFullU8 = build.out.edgesU8,
-                    maskFullU8 = maskFull,
-                    debugTag = debugTag,
-                    grayRawU8 = if (debugAlsoSaveGray3250) grayRaw else null,
-                    gateMaskU8 = build.gateMaskU8,
-                    ribbonMaskU8 = build.ribbonMaskU8,
-                    scoreU8 = build.scoreU8,
-                    projNormalU8 = build.projNormalU8,
-                    tangentialU8 = build.tangentialU8,
-                    coherencyU8 = build.coherencyU8,
-                    gateNormalU8 = build.gateNormalU8
-                )
-            } catch (t: Throwable) {
-                Log.e(TAG, "EDGE dump save failed", t)
-            }
-        }
-
-        return build.out
-    }
-
-    private fun buildFullFrameEdgePackCoreFromBitmap3250(
-        stillBmp: Bitmap,
-        borderKillPx: Int,
-        topKillY: Int,
-        maskFull: ByteArray?,
-        regionMaskFull3250: ByteArray?,
-        forceRegion3250: Boolean,
-        debugTag: String,
-        statsOut: ((EdgeStats) -> Unit)?
-    ): EdgeCoreBuild3250 {
-        val w = stillBmp.width
-        val h = stillBmp.height
-        val n = w * h
-
-        if (maskFull != null && maskFull.size != n) {
-            Log.w(TAG, "EDGE3250[$debugTag] bad maskFull size=${maskFull.size} expected=$n")
-
-            val st = EdgeStats(
-                maxScore = 0f,
-                p95Score = 0f,
-                thr = 0f,
-                nnz = 0,
-                density = 0f,
-                bandPx = 0f,
-                samples = 0,
-                topKillY = topKillY.coerceIn(0, h),
-                maskedN = 0,
-                maskedFrac = 0f,
-                maskDilateR = 0
-            )
-
-            return EdgeCoreBuild3250(
-                out = EdgeMapOut3250(w, h, ByteArray(n), ByteArray(n), st),
-                gateMaskU8 = null,
-                ribbonMaskU8 = null,
-                scoreU8 = null,
-                projNormalU8 = null,
-                tangentialU8 = null,
-                coherencyU8 = null,
-                gateNormalU8 = null
-            )
-        }
-
-        val gateMaskU8 = when {
-            regionMaskFull3250 == null -> null
-            regionMaskFull3250.size != n -> {
-                Log.w(
-                    TAG,
-                    "EDGE3250[$debugTag] bad regionMask size=${regionMaskFull3250.size} expected=$n -> ignored"
-                )
-                null
-            }
-            else -> regionMaskFull3250.copyOf()
-        }
-
-        val ribbonMaskU8 = buildRibbonMaskFromGate3250(
-            gateMaskU8 = gateMaskU8,
-            w = w,
-            h = h,
-            debugTag = debugTag
-        )
-
-        val border = borderKillPx.coerceIn(0, min(w, h) / 3)
-        val yKill = topKillY.coerceIn(0, h)
-
-        val searchMaskU8 = buildSearchMaskU83250(
-            w = w,
-            h = h,
-            borderKillPx = border,
-            topKillY = yKill,
-            maskFull = maskFull,
-            ribbonMaskU8 = ribbonMaskU8,
-            forceRegion3250 = forceRegion3250
-        )
-
-        var maskedN = 0
-        if (maskFull != null) {
-            for (i in 0 until n) {
-                if ((maskFull[i].toInt() and 0xFF) != 0) {
-                    maskedN++
-                }
-            }
-        }
-        val maskedFrac = maskedN.toFloat() / n.toFloat().coerceAtLeast(1f)
-
-        val bandBounds = computeRowBoundsFromMask3250(ribbonMaskU8, w, h)
-        val bandYMin = bandBounds.first
-        val bandYMax = bandBounds.second
 
         val rgba = Mat()
-        val rgb = Mat()
+        Utils.bitmapToMat(roiBmp, rgba)
+
+        val bgr = Mat()
+        when (rgba.channels()) {
+            4 -> Imgproc.cvtColor(rgba, bgr, Imgproc.COLOR_RGBA2BGR)
+            3 -> rgba.copyTo(bgr)
+            1 -> Imgproc.cvtColor(rgba, bgr, Imgproc.COLOR_GRAY2BGR)
+            else -> error("EDGE3250: channels inesperados=${rgba.channels()}")
+        }
+
         val gray = Mat()
-        val grayEq = Mat()
-        val grayBlur = Mat()
-
-        val hsv = Mat()
-        val sat = Mat()
-        val satBlur = Mat()
-
-        val gateMat = Mat()
-        val gateBlur = Mat()
-
-        val gxGray = Mat()
-        val gyGray = Mat()
-        val gxSat = Mat()
-        val gySat = Mat()
-        val gxGate = Mat()
-        val gyGate = Mat()
-
-        val absGxGray = Mat()
-        val absGyGray = Mat()
-        val absGxSat = Mat()
-        val absGySat = Mat()
-        val absGxGate = Mat()
-        val absGyGate = Mat()
-
-        val magGrayU8 = Mat()
-        val magSatU8 = Mat()
-        val magGateU8 = Mat()
-
-        val cannyGray = Mat()
-        val cannySat = Mat()
-
-        val jxx = Mat()
-        val jyy = Mat()
-        val jxy = Mat()
-
-        val jxxBlur = Mat()
-        val jyyBlur = Mat()
-        val jxyBlur = Mat()
-
-        try {
-            Utils.bitmapToMat(stillBmp, rgba)
-            Imgproc.cvtColor(rgba, rgb, Imgproc.COLOR_RGBA2RGB)
-            Imgproc.cvtColor(rgba, gray, Imgproc.COLOR_RGBA2GRAY)
-
-            Imgproc.equalizeHist(gray, grayEq)
-            Imgproc.GaussianBlur(
-                grayEq,
-                grayBlur,
-                Size(BLUR_GRAY_K.toDouble(), BLUR_GRAY_K.toDouble()),
-                0.0
-            )
-
-            Imgproc.cvtColor(rgb, hsv, Imgproc.COLOR_RGB2HSV)
-            Core.extractChannel(hsv, sat, 1)
-            Imgproc.GaussianBlur(
-                sat,
-                satBlur,
-                Size(BLUR_SAT_K.toDouble(), BLUR_SAT_K.toDouble()),
-                0.0
-            )
-
-            if (gateMaskU8 != null && gateMaskU8.size == n) {
-                gateMat.put(0, 0, gateMaskU8)
-            } else {
-                val full = ByteArray(n) { 0xFF.toByte() }
-                gateMat.put(0, 0, full)
-            }
-            Imgproc.GaussianBlur(
-                gateMat,
-                gateBlur,
-                Size(BLUR_GATE_K.toDouble(), BLUR_GATE_K.toDouble()),
-                0.0
-            )
-
-            Imgproc.Scharr(grayBlur, gxGray, CvType.CV_32F, 1, 0)
-            Imgproc.Scharr(grayBlur, gyGray, CvType.CV_32F, 0, 1)
-
-            Imgproc.Scharr(satBlur, gxSat, CvType.CV_32F, 1, 0)
-            Imgproc.Scharr(satBlur, gySat, CvType.CV_32F, 0, 1)
-
-            Imgproc.Scharr(gateBlur, gxGate, CvType.CV_32F, 1, 0)
-            Imgproc.Scharr(gateBlur, gyGate, CvType.CV_32F, 0, 1)
-
-            Core.convertScaleAbs(gxGray, absGxGray)
-            Core.convertScaleAbs(gyGray, absGyGray)
-            Core.addWeighted(absGxGray, 0.5, absGyGray, 0.5, 0.0, magGrayU8)
-
-            Core.convertScaleAbs(gxSat, absGxSat)
-            Core.convertScaleAbs(gySat, absGySat)
-            Core.addWeighted(absGxSat, 0.5, absGySat, 0.5, 0.0, magSatU8)
-
-            Core.convertScaleAbs(gxGate, absGxGate)
-            Core.convertScaleAbs(gyGate, absGyGate)
-            Core.addWeighted(absGxGate, 0.5, absGyGate, 0.5, 0.0, magGateU8)
-
-            Imgproc.Canny(grayBlur, cannyGray, CANNY_GRAY_LOW, CANNY_GRAY_HIGH)
-            Imgproc.Canny(satBlur, cannySat, CANNY_SAT_LOW, CANNY_SAT_HIGH)
-
-            Core.multiply(gxGray, gxGray, jxx)
-            Core.multiply(gyGray, gyGray, jyy)
-            Core.multiply(gxGray, gyGray, jxy)
-
-            Imgproc.GaussianBlur(
-                jxx,
-                jxxBlur,
-                Size(BLUR_TENSOR_K.toDouble(), BLUR_TENSOR_K.toDouble()),
-                0.0
-            )
-            Imgproc.GaussianBlur(
-                jyy,
-                jyyBlur,
-                Size(BLUR_TENSOR_K.toDouble(), BLUR_TENSOR_K.toDouble()),
-                0.0
-            )
-            Imgproc.GaussianBlur(
-                jxy,
-                jxyBlur,
-                Size(BLUR_TENSOR_K.toDouble(), BLUR_TENSOR_K.toDouble()),
-                0.0
-            )
-
-            val scoreU8 = ByteArray(n)
-            val dirU8 = ByteArray(n)
-            val projNormalU8 = ByteArray(n)
-            val tangentialU8 = ByteArray(n)
-            val coherencyU8 = ByteArray(n)
-            val gateNormalU8 = ByteArray(n)
-
-            val rowMagGray = ByteArray(w)
-            val rowMagSat = ByteArray(w)
-            val rowMagGate = ByteArray(w)
-            val rowCannyGray = ByteArray(w)
-            val rowCannySat = ByteArray(w)
-
-            val rowGxGray = FloatArray(w)
-            val rowGyGray = FloatArray(w)
-            val rowGxSat = FloatArray(w)
-            val rowGySat = FloatArray(w)
-            val rowGxGate = FloatArray(w)
-            val rowGyGate = FloatArray(w)
-
-            val rowJxx = FloatArray(w)
-            val rowJyy = FloatArray(w)
-            val rowJxy = FloatArray(w)
-
-            var validCount = 0
-            var maxScore = 0
-
-            for (y in 0 until h) {
-                magGrayU8.get(y, 0, rowMagGray)
-                magSatU8.get(y, 0, rowMagSat)
-                magGateU8.get(y, 0, rowMagGate)
-                cannyGray.get(y, 0, rowCannyGray)
-                cannySat.get(y, 0, rowCannySat)
-
-                gxGray.get(y, 0, rowGxGray)
-                gyGray.get(y, 0, rowGyGray)
-                gxSat.get(y, 0, rowGxSat)
-                gySat.get(y, 0, rowGySat)
-                gxGate.get(y, 0, rowGxGate)
-                gyGate.get(y, 0, rowGyGate)
-
-                jxxBlur.get(y, 0, rowJxx)
-                jyyBlur.get(y, 0, rowJyy)
-                jxyBlur.get(y, 0, rowJxy)
-
-                val off = y * w
-                val bottomFrac = computeBottomFrac3250(y, bandYMin, bandYMax)
-
-                for (x in 0 until w) {
-                    val i = off + x
-
-                    if ((searchMaskU8[i].toInt() and 0xFF) == 0) {
-                        continue
-                    }
-
-                    val gMag = rowMagGray[x].toInt() and 0xFF
-                    val sMag = rowMagSat[x].toInt() and 0xFF
-                    val gateMag = rowMagGate[x].toInt() and 0xFF
-
-                    val gxg = rowGxGray[x]
-                    val gyg = rowGyGray[x]
-                    val gxs = rowGxSat[x]
-                    val gys = rowGySat[x]
-                    val gxMask = rowGxGate[x]
-                    val gyMask = rowGyGate[x]
-
-                    val gateNorm = sqrt(gxMask * gxMask + gyMask * gyMask)
-                    val hasGateNormal = gateNorm > 1e-3f
-
-                    val nx = if (hasGateNormal) gxMask / gateNorm else 1f
-                    val ny = if (hasGateNormal) gyMask / gateNorm else 0f
-                    val tx = -ny
-                    val ty = nx
-
-                    val projGray = abs(gxg * nx + gyg * ny)
-                    val tanGray = abs(gxg * tx + gyg * ty)
-                    val projSat = abs(gxs * nx + gys * ny)
-                    val tanSat = abs(gxs * tx + gys * ty)
-
-                    val alignGray = max(
-                        ALIGN_FLOOR,
-                        projGray / (projGray + tanGray + 1e-3f)
-                    )
-                    val alignSat = max(
-                        ALIGN_FLOOR,
-                        projSat / (projSat + tanSat + 1e-3f)
-                    )
-
-                    val projMix = 0.5f * (
-                            (gMag / 255f) * alignGray +
-                                    (sMag / 255f) * alignSat
-                            )
-                    val tangMix = 0.5f * (
-                            (gMag / 255f) * (1f - alignGray) +
-                                    (sMag / 255f) * (1f - alignSat)
-                            )
-
-                    val j11 = rowJxx[x]
-                    val j22 = rowJyy[x]
-                    val j12 = rowJxy[x]
-                    val cohDen = j11 + j22 + 1e-3f
-                    val cohNum = sqrt(
-                        (j11 - j22) * (j11 - j22) + 4f * j12 * j12
-                    )
-                    val coherency = (cohNum / cohDen).coerceIn(0f, 1f)
-
-                    val gateConf = max(
-                        GATE_CONF_FLOOR,
-                        (gateMag / 96f).coerceIn(0f, 1f)
-                    )
-                    val cohConf = max(COH_FLOOR, coherency)
-
-                    val cGray = if ((rowCannyGray[x].toInt() and 0xFF) != 0) 1f else 0f
-                    val cSat = if ((rowCannySat[x].toInt() and 0xFF) != 0) 1f else 0f
-
-                    var scoreF = 255f * (
-                            SCORE_W_GRAY_NORMAL * (gMag / 255f) * alignGray +
-                                    SCORE_W_SAT_NORMAL * (sMag / 255f) * alignSat +
-                                    SCORE_W_GRAY_CANNY * cGray * alignGray +
-                                    SCORE_W_SAT_CANNY * cSat * alignSat +
-                                    SCORE_W_COHERENCY * cohConf +
-                                    SCORE_W_GATE_NORMAL * gateConf +
-                                    SCORE_W_BOTTOM_BONUS * bottomFrac -
-                                    PENALTY_W_GRAY_TANG * (gMag / 255f) * (1f - alignGray) -
-                                    PENALTY_W_SAT_TANG * (sMag / 255f) * (1f - alignSat)
-                            )
-
-                    scoreF *= (0.55f + 0.45f * gateConf)
-                    scoreF *= (0.60f + 0.40f * cohConf)
-
-                    val score = scoreF.roundToInt().coerceIn(0, 255)
-                    if (score <= 0) {
-                        continue
-                    }
-
-                    scoreU8[i] = score.toByte()
-                    dirU8[i] = quantizeDir3250(
-                        gx = gxg.toInt(),
-                        gy = gyg.toInt(),
-                        ax = abs(gxg).toInt(),
-                        ay = abs(gyg).toInt()
-                    ).toByte()
-
-                    projNormalU8[i] = (projMix * 255f).roundToInt().coerceIn(0, 255).toByte()
-                    tangentialU8[i] = (tangMix * 255f).roundToInt().coerceIn(0, 255).toByte()
-                    coherencyU8[i] = (coherency * 255f).roundToInt().coerceIn(0, 255).toByte()
-                    gateNormalU8[i] = (gateConf * 255f).roundToInt().coerceIn(0, 255).toByte()
-
-                    validCount++
-                    if (score > maxScore) {
-                        maxScore = score
-                    }
-                }
-            }
-
-            if (validCount < 64 || maxScore <= 0) {
-                Log.w(TAG, "EDGE3250[$debugTag] no score signal valid=$validCount max=$maxScore")
-
-                val st = EdgeStats(
-                    maxScore = maxScore.toFloat(),
-                    p95Score = 0f,
-                    thr = 0f,
-                    nnz = 0,
-                    density = 0f,
-                    bandPx = countNonZeroU83250(ribbonMaskU8).toFloat(),
-                    samples = validCount,
-                    topKillY = yKill,
-                    maskedN = maskedN,
-                    maskedFrac = maskedFrac,
-                    maskDilateR = MASK_DILATE_RADIUS_PX
-                )
-
-                statsOut?.invoke(st)
-
-                return EdgeCoreBuild3250(
-                    out = EdgeMapOut3250(w, h, ByteArray(n), dirU8, st),
-                    gateMaskU8 = gateMaskU8,
-                    ribbonMaskU8 = ribbonMaskU8,
-                    scoreU8 = scoreU8,
-                    projNormalU8 = projNormalU8,
-                    tangentialU8 = tangentialU8,
-                    coherencyU8 = coherencyU8,
-                    gateNormalU8 = gateNormalU8
-                )
-            }
-
-            val hist = IntArray(256)
-            for (i in 0 until n) {
-                if ((searchMaskU8[i].toInt() and 0xFF) == 0) {
-                    continue
-                }
-                val s = scoreU8[i].toInt() and 0xFF
-                if (s > 0) {
-                    hist[s]++
-                }
-            }
-
-            val p95 = percentileFromU8Hist3250(hist, 0.95f)
-            val thrHigh = computeThrHighU8_3250(maxScore, p95)
-            val thrLow = max(14, (thrHigh * 0.68f).toInt())
-
-            val classMap = ByteArray(n)
-            var candCount = 0
-            var strongCount = 0
-
-            for (y in 1 until (h - 1)) {
-                val off = y * w
-                val bottomFrac = computeBottomFrac3250(y, bandYMin, bandYMax)
-                val relax = if (bottomFrac <= BOTTOM_SEED_FRAC_START) {
-                    0
-                } else {
-                    val t = ((bottomFrac - BOTTOM_SEED_FRAC_START) / (1f - BOTTOM_SEED_FRAC_START))
-                        .coerceIn(0f, 1f)
-                    (BOTTOM_THR_RELAX_MAX * t * t).roundToInt()
-                }
-
-                for (x in 1 until (w - 1)) {
-                    val i = off + x
-
-                    if ((searchMaskU8[i].toInt() and 0xFF) == 0) {
-                        continue
-                    }
-
-                    val s = scoreU8[i].toInt() and 0xFF
-                    if (s < thrLow) {
-                        continue
-                    }
-
-                    val d = dirU8[i].toInt() and 0xFF
-                    val neighbors = nmsNeighbors3250(i, x, y, w, d)
-                    val i1 = neighbors.first
-                    val i2 = neighbors.second
-
-                    val s1 = if ((searchMaskU8[i1].toInt() and 0xFF) != 0) {
-                        scoreU8[i1].toInt() and 0xFF
-                    } else {
-                        0
-                    }
-
-                    val s2 = if ((searchMaskU8[i2].toInt() and 0xFF) != 0) {
-                        scoreU8[i2].toInt() and 0xFF
-                    } else {
-                        0
-                    }
-
-                    if (s < s1 || s < s2) {
-                        continue
-                    }
-
-                    val thrStrongLocal = max(thrLow, thrHigh - relax)
-                    if (s >= thrStrongLocal) {
-                        classMap[i] = 2
-                        strongCount++
-                    } else {
-                        classMap[i] = 1
-                    }
-                    candCount++
-                }
-            }
-
-            val out = ByteArray(n)
-
-            if (strongCount == 0 || candCount == 0) {
-                Log.w(
-                    TAG,
-                    "EDGE3250[$debugTag] no strong/candidates strong=$strongCount cand=$candCount thrH=$thrHigh thrL=$thrLow"
-                )
-
-                val st = EdgeStats(
-                    maxScore = maxScore.toFloat(),
-                    p95Score = p95.toFloat(),
-                    thr = thrHigh.toFloat(),
-                    nnz = 0,
-                    density = 0f,
-                    bandPx = countNonZeroU83250(ribbonMaskU8).toFloat(),
-                    samples = validCount,
-                    topKillY = yKill,
-                    maskedN = maskedN,
-                    maskedFrac = maskedFrac,
-                    maskDilateR = MASK_DILATE_RADIUS_PX
-                )
-
-                statsOut?.invoke(st)
-
-                return EdgeCoreBuild3250(
-                    out = EdgeMapOut3250(w, h, out, dirU8, st),
-                    gateMaskU8 = gateMaskU8,
-                    ribbonMaskU8 = ribbonMaskU8,
-                    scoreU8 = scoreU8,
-                    projNormalU8 = projNormalU8,
-                    tangentialU8 = tangentialU8,
-                    coherencyU8 = coherencyU8,
-                    gateNormalU8 = gateNormalU8
-                )
-            }
-
-            val q = IntArray(max(candCount, 1))
-            var qh = 0
-            var qt = 0
-
-            for (i in 0 until n) {
-                if (classMap[i].toInt() == 2) {
-                    out[i] = 0xFF.toByte()
-                    q[qt++] = i
-                }
-            }
-
-            while (qh < qt) {
-                val i = q[qh++]
-                val x = i % w
-                val y = i / w
-
-                for (dy in -1..1) {
-                    for (dx in -1..1) {
-                        if (dx == 0 && dy == 0) {
-                            continue
-                        }
-
-                        val xx = x + dx
-                        val yy = y + dy
-
-                        if (xx <= 0 || xx >= w - 1) {
-                            continue
-                        }
-                        if (yy <= 0 || yy >= h - 1) {
-                            continue
-                        }
-
-                        val j = yy * w + xx
-                        if ((searchMaskU8[j].toInt() and 0xFF) == 0) {
-                            continue
-                        }
-
-                        if (classMap[j].toInt() == 1) {
-                            classMap[j] = 2
-                            out[j] = 0xFF.toByte()
-                            q[qt++] = j
-                        }
-                    }
-                }
-            }
-
-            val outBridged = bridgeHorizontalGapsU83250(
-                edges = out,
-                dir = dirU8,
-                w = w,
-                h = h,
-                maxGapPx = BRIDGE_MAX_GAP_PX
-            )
-
-            val outFinal = morphPostEdgeU83250(
-                srcU8 = outBridged,
-                keepMaskU8 = searchMaskU8,
-                w = w,
-                h = h,
-                closeRadiusPx = FINAL_CLOSE_RADIUS_PX,
-                dilateRadiusPx = FINAL_DILATE_RADIUS_PX
-            )
-
-            val dirFinal = dirU8.copyOf()
-            for (i in 0 until n) {
-                val eNew = outFinal[i].toInt() and 0xFF
-                if (eNew == 0) {
-                    continue
-                }
-                val eOld = out[i].toInt() and 0xFF
-                if (eOld == 0) {
-                    dirFinal[i] = 0xFF.toByte()
-                }
-            }
-
-            var nnzFinal = 0
-            for (b in outFinal) {
-                if ((b.toInt() and 0xFF) != 0) {
-                    nnzFinal++
-                }
-            }
-
-            val dens = nnzFinal.toFloat() / n.toFloat().coerceAtLeast(1f)
-            val bandPx = countNonZeroU83250(ribbonMaskU8).toFloat()
-
-            Log.d(
-                TAG,
-                "EDGE3250[$debugTag] max=$maxScore p95=$p95 thrH=$thrHigh thrL=$thrLow " +
-                        "strong=$strongCount cand=$candCount nnz=$nnzFinal/$n dens=${fmt4(dens)} " +
-                        "bandPx=${bandPx.toInt()} forceRegion=$forceRegion3250 " +
-                        "maskedN=$maskedN frac=${fmt4(maskedFrac)} yBand=[$bandYMin,$bandYMax]"
-            )
-
-            val st = EdgeStats(
-                maxScore = maxScore.toFloat(),
-                p95Score = p95.toFloat(),
-                thr = thrHigh.toFloat(),
-                nnz = nnzFinal,
-                density = dens,
-                bandPx = bandPx,
-                samples = validCount,
-                topKillY = yKill,
-                maskedN = maskedN,
-                maskedFrac = maskedFrac,
-                maskDilateR = MASK_DILATE_RADIUS_PX
-            )
-
-            statsOut?.invoke(st)
-
-            return EdgeCoreBuild3250(
-                out = EdgeMapOut3250(
-                    w = w,
-                    h = h,
-                    edgesU8 = outFinal,
-                    dirU8 = dirFinal,
-                    stats = st
-                ),
-                gateMaskU8 = gateMaskU8,
-                ribbonMaskU8 = ribbonMaskU8,
-                scoreU8 = scoreU8,
-                projNormalU8 = projNormalU8,
-                tangentialU8 = tangentialU8,
-                coherencyU8 = coherencyU8,
-                gateNormalU8 = gateNormalU8
-            )
-        } finally {
-            releaseQuiet3250(
-                rgba, rgb, gray, grayEq, grayBlur,
-                hsv, sat, satBlur,
-                gateMat, gateBlur,
-                gxGray, gyGray, gxSat, gySat, gxGate, gyGate,
-                absGxGray, absGyGray, absGxSat, absGySat, absGxGate, absGyGate,
-                magGrayU8, magSatU8, magGateU8,
-                cannyGray, cannySat,
-                jxx, jyy, jxy, jxxBlur, jyyBlur, jxyBlur
-            )
-        }
-    }
-
-    private fun buildRibbonMaskFromGate3250(
-        gateMaskU8: ByteArray?,
-        w: Int,
-        h: Int,
-        debugTag: String
-    ): ByteArray? {
-        if (gateMaskU8 == null || gateMaskU8.size != w * h) {
-            return null
-        }
-
-        val nz = countNonZeroU83250(gateMaskU8)
-        if (nz <= 0) {
-            return null
-        }
-
-        val cov = nz.toFloat() / (w * h).toFloat().coerceAtLeast(1f)
-
-        val gateMat = byteMaskToMatU83250(gateMaskU8, w, h)
-        val workA = Mat()
-        val workB = Mat()
-        val ribbon = Mat()
-
-        try {
-            if (cov <= RIBBON_THIN_COVERAGE_FRAC) {
-                val kDil = ellipseKernel3250(RIBBON_OUTER_DILATE_PX)
-                try {
-                    Imgproc.dilate(gateMat, workA, kDil)
-                } finally {
-                    kDil.release()
-                }
-
-                val kClose = ellipseKernel3250(RIBBON_CLOSE_RADIUS_PX)
-                try {
-                    Imgproc.morphologyEx(workA, workB, Imgproc.MORPH_CLOSE, kClose)
-                } finally {
-                    kClose.release()
-                }
-
-                return matU8ToByteArray3250(workB, w, h)
-            }
-
-            val kDil = ellipseKernel3250(RIBBON_OUTER_DILATE_PX)
-            val kEro = ellipseKernel3250(RIBBON_INNER_ERODE_PX)
-
-            try {
-                Imgproc.dilate(gateMat, workA, kDil)
-                Imgproc.erode(gateMat, workB, kEro)
-            } finally {
-                kDil.release()
-                kEro.release()
-            }
-
-            val notInner = Mat()
-            try {
-                Core.bitwise_not(workB, notInner)
-                Core.bitwise_and(workA, notInner, ribbon)
-
-                val kClose = ellipseKernel3250(RIBBON_CLOSE_RADIUS_PX)
-                try {
-                    Imgproc.morphologyEx(ribbon, ribbon, Imgproc.MORPH_CLOSE, kClose)
-                } finally {
-                    kClose.release()
-                }
-
-                val out = matU8ToByteArray3250(ribbon, w, h)
-                val outNz = countNonZeroU83250(out)
-
-                Log.d(
-                    TAG,
-                    "EDGE3250[$debugTag] ribbon covGate=${fmt4(cov)} nzGate=$nz nzRibbon=$outNz"
-                )
-
-                return out
-            } finally {
-                releaseQuiet3250(notInner)
-            }
-        } finally {
-            releaseQuiet3250(gateMat, workA, workB, ribbon)
-        }
-    }
-
-    private fun buildSearchMaskU83250(
-        w: Int,
-        h: Int,
-        borderKillPx: Int,
-        topKillY: Int,
-        maskFull: ByteArray?,
-        ribbonMaskU8: ByteArray?,
-        forceRegion3250: Boolean
-    ): ByteArray {
-        val n = w * h
-        val out = ByteArray(n)
-
-        if (ribbonMaskU8 != null && ribbonMaskU8.size == n) {
-            System.arraycopy(ribbonMaskU8, 0, out, 0, n)
+        Imgproc.cvtColor(bgr, gray, Imgproc.COLOR_BGR2GRAY)
+
+        val blur = Mat()
+        val blurK = ensureOdd3250(max(1, params3250.blurK3250))
+        if (blurK > 1) {
+            Imgproc.GaussianBlur(gray, blur, Size(blurK.toDouble(), blurK.toDouble()), 0.0)
         } else {
-            for (i in 0 until n) {
-                out[i] = 0xFF.toByte()
-            }
+            gray.copyTo(blur)
         }
 
-        val b = borderKillPx.coerceIn(0, min(w, h) / 3)
-        val yKill = topKillY.coerceIn(0, h)
+        val gx16 = Mat()
+        val gy16 = Mat()
+        Imgproc.Scharr(blur, gx16, CvType.CV_16S, 1, 0, params3250.scharrWeight3250, 0.0)
+        Imgproc.Scharr(blur, gy16, CvType.CV_16S, 0, 1, params3250.scharrWeight3250, 0.0)
+
+        val absGx = Mat()
+        val absGy = Mat()
+        org.opencv.core.Core.convertScaleAbs(gx16, absGx)
+        org.opencv.core.Core.convertScaleAbs(gy16, absGy)
+
+        val score = Mat()
+        org.opencv.core.Core.max(absGx, absGy, score)
+
+        val absGx32 = Mat()
+        val absGy32 = Mat()
+        absGx.convertTo(absGx32, CvType.CV_32F)
+        absGy.convertTo(absGy32, CvType.CV_32F)
+
+        val hScore32 = Mat()
+        val vScore32 = Mat()
+        org.opencv.core.Core.addWeighted(
+            absGy32,
+            1.0,
+            absGx32,
+            -params3250.hvSuppressCross3250,
+            0.0,
+            hScore32
+        )
+        org.opencv.core.Core.addWeighted(
+            absGx32,
+            1.0,
+            absGy32,
+            -params3250.hvSuppressCross3250,
+            0.0,
+            vScore32
+        )
+
+        Imgproc.threshold(hScore32, hScore32, 0.0, 0.0, Imgproc.THRESH_TOZERO)
+        Imgproc.threshold(vScore32, vScore32, 0.0, 0.0, Imgproc.THRESH_TOZERO)
+
+        val hScore = Mat()
+        val vScore = Mat()
+        org.opencv.core.Core.convertScaleAbs(hScore32, hScore)
+        org.opencv.core.Core.convertScaleAbs(vScore32, vScore)
+
+        val scoreU8 = matU8ToByteArray3250(score)
+        val hScoreU8 = matU8ToByteArray3250(hScore)
+        val vScoreU8 = matU8ToByteArray3250(vScore)
+        val scoreThr = computeScoreThreshold3250(
+            scoreU83250 = scoreU8,
+            percentile3250 = params3250.scorePercentile3250,
+            minFrac3250 = params3250.scoreMinFrac3250
+        )
+
+        val scoreBin = Mat(score.rows(), score.cols(), CvType.CV_8UC1)
+        Imgproc.threshold(score, scoreBin, scoreThr.toDouble(), 255.0, Imgproc.THRESH_BINARY)
+
+        val cannyHigh = max(10.0, scoreThr * params3250.cannyHighFrac3250)
+        val cannyLow = max(5.0, cannyHigh * params3250.cannyLowFrac3250)
+
+        val canny = Mat()
+        Imgproc.Canny(blur, canny, cannyLow, cannyHigh, 3, false)
+
+        val edgeRaw = Mat()
+        org.opencv.core.Core.max(scoreBin, canny, edgeRaw)
+
+        val edgePost = postProcessEdgeU83250(
+            srcU83250 = edgeRaw,
+            closeRadius3250 = params3250.closeRadius3250,
+            bridgeGapPx3250 = params3250.bridgeGapPx3250,
+            bridgeMinRunPx3250 = params3250.bridgeMinRunPx3250,
+            dilateIters3250 = params3250.dilateIters3250
+        )
+
+        val dirU8 = buildDirMap3250(gx16, gy16)
+
+        val grayU8 = matU8ToByteArray3250(gray)
+        val cannyU8 = matU8ToByteArray3250(canny)
+        val edgeRawU8 = matU8ToByteArray3250(edgeRaw)
+        val edgePostU8 = matU8ToByteArray3250(edgePost)
+
+        val pack = RoiEdgePack3250(
+            roiRectGlobal3250 = roi,
+            w3250 = roi.width(),
+            h3250 = roi.height(),
+            grayU83250 = grayU8,
+            scoreU83250 = scoreU8,
+            hScoreU83250 = hScoreU8,
+            vScoreU83250 = vScoreU8,
+            cannyU83250 = cannyU8,
+            edgeRawU83250 = edgeRawU8,
+            edgePostU83250 = edgePostU8,
+            dirU83250 = dirU8,
+            thrScore3250 = scoreThr,
+            pctlScore3250 = params3250.scorePercentile3250,
+            nonZeroRaw3250 = countNonZero3250(edgeRawU8),
+            nonZeroPost3250 = countNonZero3250(edgePostU8)
+        )
+
+        Log.d(
+            TAG,
+            String.format(
+                Locale.US,
+                "EDGE3250[%s] roi=(%d,%d %dx%d) thr=%d pctl=%.1f rawNZ=%d postNZ=%d cannyLow=%.1f cannyHigh=%.1f",
+                debugTag3250,
+                roi.left,
+                roi.top,
+                roi.width(),
+                roi.height(),
+                scoreThr,
+                params3250.scorePercentile3250,
+                pack.nonZeroRaw3250,
+                pack.nonZeroPost3250,
+                cannyLow,
+                cannyHigh
+            )
+        )
+
+        if (params3250.debugSaveToGallery3250 && ctx != null) {
+            debugDumpRoiEdgePack3250(
+                ctx = ctx,
+                pack3250 = pack,
+                debugTag3250 = debugTag3250,
+                filGeometryPtsGlobal3250 = filGeometryPtsGlobal3250
+            )
+        }
+
+        rgba.release()
+        bgr.release()
+        gray.release()
+        blur.release()
+        gx16.release()
+        gy16.release()
+        absGx.release()
+        absGy.release()
+        score.release()
+        scoreBin.release()
+        canny.release()
+        edgeRaw.release()
+        edgePost.release()
+        absGx32.release()
+        absGy32.release()
+        hScore32.release()
+        vScore32.release()
+        hScore.release()
+        vScore.release()
+
+        return pack
+    }
+
+    fun debugDumpRoiEdgePack3250(
+        ctx: Context,
+        pack3250: RoiEdgePack3250,
+        debugTag3250: String,
+        filGeometryPtsGlobal3250: List<PointF>? = null
+    ) {
+        val grayBmp = u8ToBitmap3250(pack3250.grayU83250, pack3250.w3250, pack3250.h3250)
+        val scoreBmp = u8ToBitmap3250(pack3250.scoreU83250, pack3250.w3250, pack3250.h3250)
+        val hScoreBmp = u8ToBitmap3250(pack3250.hScoreU83250, pack3250.w3250, pack3250.h3250)
+        val vScoreBmp = u8ToBitmap3250(pack3250.vScoreU83250, pack3250.w3250, pack3250.h3250)
+        val cannyBmp = u8ToBitmap3250(pack3250.cannyU83250, pack3250.w3250, pack3250.h3250)
+        val rawBmp = u8ToBitmap3250(pack3250.edgeRawU83250, pack3250.w3250, pack3250.h3250)
+        val postBmp = u8ToBitmap3250(pack3250.edgePostU83250, pack3250.w3250, pack3250.h3250)
+
+        saveBitmapPng3250(ctx, grayBmp, "EDGE3250_${debugTag3250}_01_gray")
+        saveBitmapPng3250(ctx, scoreBmp, "EDGE3250_${debugTag3250}_02_score")
+        saveBitmapPng3250(ctx, hScoreBmp, "EDGE3250_${debugTag3250}_03_hscore")
+        saveBitmapPng3250(ctx, vScoreBmp, "EDGE3250_${debugTag3250}_04_vscore")
+        saveBitmapPng3250(ctx, cannyBmp, "EDGE3250_${debugTag3250}_05_canny")
+        saveBitmapPng3250(ctx, rawBmp, "EDGE3250_${debugTag3250}_06_edge_raw")
+        saveBitmapPng3250(ctx, postBmp, "EDGE3250_${debugTag3250}_07_detector_input")
+
+
+        val overlayBmp = postBmp.copy(Bitmap.Config.ARGB_8888, true)
+        val ptsRoi = filGeometryPtsGlobal3250
+            ?.map {
+                PointF(
+                    it.x - pack3250.roiRectGlobal3250.left,
+                    it.y - pack3250.roiRectGlobal3250.top
+                )
+            }
+            ?.filter { it.x in 0f..(pack3250.w3250 - 1).toFloat() && it.y in 0f..(pack3250.h3250 - 1).toFloat() }
+
+
+        if (!ptsRoi.isNullOrEmpty()) {
+            drawPolylineOnBitmap3250(
+                bmp = overlayBmp,
+                pts = ptsRoi,
+                color = Color.RED,
+                strokePx = 2.0f,
+                closed = true
+            )
+        }
+        saveBitmapPng3250(ctx, overlayBmp, "EDGE3250_${debugTag3250}_08_detector_input_plus_fil")
+    }
+
+    private fun postProcessEdgeU83250(
+        srcU83250: Mat,
+        closeRadius3250: Int,
+        bridgeGapPx3250: Int,
+        bridgeMinRunPx3250: Int,
+        dilateIters3250: Int
+    ): Mat {
+        val work = Mat()
+        srcU83250.copyTo(work)
+
+        if (closeRadius3250 > 0) {
+            val k = 2 * closeRadius3250 + 1
+            val kernel = Imgproc.getStructuringElement(
+                Imgproc.MORPH_ELLIPSE,
+                Size(k.toDouble(), k.toDouble())
+            )
+            Imgproc.morphologyEx(work, work, Imgproc.MORPH_CLOSE, kernel)
+            kernel.release()
+        }
+
+        val tmpBridge = bridgeHorizontalGaps3250(
+            srcU83250 = work,
+            maxGapPx3250 = bridgeGapPx3250,
+            minRunPx3250 = bridgeMinRunPx3250
+        )
+        work.release()
+
+        if (dilateIters3250 > 0) {
+            val kernel = Imgproc.getStructuringElement(
+                Imgproc.MORPH_ELLIPSE,
+                Size(3.0, 3.0)
+            )
+            Imgproc.dilate(tmpBridge, tmpBridge, kernel, Point(-1.0, -1.0), dilateIters3250)
+            kernel.release()
+        }
+
+        return tmpBridge
+    }
+
+    private fun bridgeHorizontalGaps3250(
+        srcU83250: Mat,
+        maxGapPx3250: Int,
+        minRunPx3250: Int
+    ): Mat {
+        val w = srcU83250.cols()
+        val h = srcU83250.rows()
+        val arr = ByteArray(w * h)
+        srcU83250.get(0, 0, arr)
+
+        fun isOn(x: Int, y: Int): Boolean {
+            return (arr[y * w + x].toInt() and 0xFF) != 0
+        }
+
+        fun setOn(x: Int, y: Int) {
+            arr[y * w + x] = 0xFF.toByte()
+        }
 
         for (y in 0 until h) {
-            val off = y * w
-            val killRow = y < yKill || y < b || y >= h - b
-
-            for (x in 0 until w) {
-                val i = off + x
-
-                if (killRow || x < b || x >= w - b) {
-                    out[i] = 0
+            var x = 0
+            while (x < w) {
+                if (!isOn(x, y)) {
+                    x++
                     continue
                 }
 
-                if (maskFull != null && (maskFull[i].toInt() and 0xFF) != 0) {
-                    out[i] = 0
+                var run1End = x
+                while (run1End + 1 < w && isOn(run1End + 1, y)) run1End++
+                val run1Len = run1End - x + 1
+
+                val gapStart = run1End + 1
+                var gapEnd = gapStart
+                while (gapEnd < w && !isOn(gapEnd, y)) gapEnd++
+
+                if (gapEnd >= w) {
+                    x = run1End + 1
                     continue
                 }
 
-                if (forceRegion3250 && ribbonMaskU8 != null && (ribbonMaskU8[i].toInt() and 0xFF) == 0) {
-                    out[i] = 0
+                val run2Start = gapEnd
+                var run2End = run2Start
+                while (run2End + 1 < w && isOn(run2End + 1, y)) run2End++
+                val run2Len = run2End - run2Start + 1
+                val gapLen = run2Start - gapStart
+
+                if (run1Len >= minRunPx3250 && run2Len >= minRunPx3250 && gapLen in 1..maxGapPx3250) {
+                    for (xx in gapStart until run2Start) setOn(xx, y)
                 }
+
+                x = run2End + 1
             }
+        }
+
+        val out = Mat(h, w, CvType.CV_8UC1)
+        out.put(0, 0, arr)
+        return out
+    }
+
+    private fun buildDirMap3250(gx16: Mat, gy16: Mat): ByteArray {
+        val w = gx16.cols()
+        val h = gx16.rows()
+
+        val gxArr = ShortArray(w * h)
+        val gyArr = ShortArray(w * h)
+        gx16.get(0, 0, gxArr)
+        gy16.get(0, 0, gyArr)
+
+        val out = ByteArray(w * h)
+
+        for (i in out.indices) {
+            val gx = gxArr[i].toInt()
+            val gy = gyArr[i].toInt()
+
+            if (gx == 0 && gy == 0) {
+                out[i] = 255.toByte()
+                continue
+            }
+
+            val ang = Math.toDegrees(atan2(gy.toDouble(), gx.toDouble()))
+            val a = ((ang + 180.0) % 180.0)
+
+            val bin = when {
+                a < 22.5 -> 0
+                a < 67.5 -> 1
+                a < 112.5 -> 2
+                a < 157.5 -> 3
+                else -> 0
+            }
+            out[i] = bin.toByte()
         }
 
         return out
     }
 
-    private fun morphPostEdgeU83250(
-        srcU8: ByteArray,
-        keepMaskU8: ByteArray,
-        w: Int,
-        h: Int,
-        closeRadiusPx: Int,
-        dilateRadiusPx: Int
-    ): ByteArray {
-        val src = byteMaskToMatU83250(srcU8, w, h)
-        val keep = byteMaskToMatU83250(keepMaskU8, w, h)
-        val tmp = Mat()
-        val dst = Mat()
+    private fun computeScoreThreshold3250(
+        scoreU83250: ByteArray,
+        percentile3250: Double,
+        minFrac3250: Double
+    ): Int {
+        val hist = IntArray(256)
+        var maxV = 0
 
-        try {
-            src.copyTo(tmp)
+        for (b in scoreU83250) {
+            val v = b.toInt() and 0xFF
+            hist[v]++
+            if (v > maxV) maxV = v
+        }
 
-            if (closeRadiusPx > 0) {
-                val kClose = ellipseKernel3250(closeRadiusPx)
-                try {
-                    Imgproc.morphologyEx(tmp, tmp, Imgproc.MORPH_CLOSE, kClose)
-                } finally {
-                    kClose.release()
-                }
+        if (maxV <= 0) return 1
+
+        val target = (scoreU83250.size * (percentile3250 / 100.0)).roundToInt()
+        var acc = 0
+        var pctl = maxV
+
+        for (v in 0..255) {
+            acc += hist[v]
+            if (acc >= target) {
+                pctl = v
+                break
             }
+        }
 
-            if (dilateRadiusPx > 0) {
-                val kDil = ellipseKernel3250(dilateRadiusPx)
-                try {
-                    Imgproc.dilate(tmp, tmp, kDil)
-                } finally {
-                    kDil.release()
-                }
-            }
+        val minThr = max(1, (maxV * minFrac3250).roundToInt())
+        return max(pctl, minThr)
+    }
 
-            Core.bitwise_and(tmp, keep, dst)
-            return matU8ToByteArray3250(dst, w, h)
-        } finally {
-            releaseQuiet3250(src, keep, tmp, dst)
+    private fun matU8ToByteArray3250(mat: Mat): ByteArray {
+        require(mat.type() == CvType.CV_8UC1) {
+            "EDGE3250: matU8ToByteArray espera CV_8UC1, llegó type=${mat.type()}"
+        }
+        val arr = ByteArray(mat.rows() * mat.cols())
+        mat.get(0, 0, arr)
+        return arr
+    }
+
+    private fun u8ToBitmap3250(u8: ByteArray, w: Int, h: Int): Bitmap {
+        require(u8.size == w * h) {
+            "EDGE3250: u8ToBitmap size mismatch expected=${w * h} actual=${u8.size}"
+        }
+
+        val pixels = IntArray(w * h)
+        for (i in u8.indices) {
+            val v = u8[i].toInt() and 0xFF
+            pixels[i] = Color.argb(255, v, v, v)
+        }
+
+        return Bitmap.createBitmap(pixels, w, h, Bitmap.Config.ARGB_8888)
+    }
+
+    private fun countNonZero3250(arr: ByteArray): Int {
+        var c = 0
+        for (b in arr) {
+            if ((b.toInt() and 0xFF) != 0) c++
+        }
+        return c
+    }
+
+    private fun clampRect3250(r: Rect, maxW: Int, maxH: Int): Rect {
+        val l = r.left.coerceIn(0, maxW - 1)
+        val t = r.top.coerceIn(0, maxH - 1)
+        val rr = r.right.coerceIn(l + 1, maxW)
+        val bb = r.bottom.coerceIn(t + 1, maxH)
+        return Rect(l, t, rr, bb)
+    }
+
+    private fun ensureOdd3250(v: Int): Int = if (v % 2 == 0) v + 1 else v
+
+    private fun drawPolylineOnBitmap3250(
+        bmp: Bitmap,
+        pts: List<PointF>,
+        color: Int,
+        strokePx: Float,
+        closed: Boolean
+    ) {
+        if (pts.size < 2) return
+
+        val canvas = Canvas(bmp)
+        val p = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            this.color = color
+            style = Paint.Style.STROKE
+            strokeWidth = strokePx
+        }
+
+        for (i in 0 until pts.lastIndex) {
+            val a = pts[i]
+            val b = pts[i + 1]
+            canvas.drawLine(a.x, a.y, b.x, b.y, p)
+        }
+
+        if (closed) {
+            val a = pts.last()
+            val b = pts.first()
+            canvas.drawLine(a.x, a.y, b.x, b.y, p)
         }
     }
 
-    private fun saveU8ToGalleryAsPng3250(
+    private fun saveBitmapPng3250(
         ctx: Context,
-        u8img: ByteArray,
-        w: Int,
-        h: Int,
-        displayName: String,
-        invert: Boolean
+        bmp: Bitmap,
+        baseName3250: String
     ): Uri? {
-        if (u8img.size != w * h || w <= 0 || h <= 0) {
-            return null
-        }
-
-        val scale = computeDebugScale3250(w, h)
-        val outW = (w * scale).toInt().coerceAtLeast(1)
-        val outH = (h * scale).toInt().coerceAtLeast(1)
-
-        val bmp = createBitmap(outW, outH)
-        val row = IntArray(outW)
-
-        for (yy in 0 until outH) {
-            val ySrc = ((yy.toFloat() / outH) * h).toInt().coerceIn(0, h - 1)
-            val offSrc = ySrc * w
-
-            for (xx in 0 until outW) {
-                val xSrc = ((xx.toFloat() / outW) * w).toInt().coerceIn(0, w - 1)
-                var v = u8img[offSrc + xSrc].toInt() and 0xFF
-                if (invert) {
-                    v = 255 - v
-                }
-                row[xx] = (0xFF shl 24) or (v shl 16) or (v shl 8) or v
-            }
-
-            bmp.setPixels(row, 0, outW, 0, yy, outW, 1)
-        }
+        val resolver = ctx.contentResolver
+        val fileName = "${baseName3250}_${System.currentTimeMillis()}.png"
 
         val values = ContentValues().apply {
-            put(MediaStore.Images.Media.DISPLAY_NAME, displayName)
+            put(MediaStore.Images.Media.DISPLAY_NAME, fileName)
             put(MediaStore.Images.Media.MIME_TYPE, "image/png")
-            put(MediaStore.Images.Media.RELATIVE_PATH, "Pictures/debug3250")
+            put(MediaStore.Images.Media.RELATIVE_PATH, "Pictures/PrecalDNP")
             put(MediaStore.Images.Media.IS_PENDING, 1)
         }
 
-        val resolver = ctx.contentResolver
-        val uri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values) ?: run {
-            try {
-                bmp.recycle()
-            } catch (_: Throwable) {
-            }
-            return null
-        }
+        val uri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values) ?: return null
 
-        try {
-            resolver.openOutputStream(uri)?.use { os: OutputStream ->
-                bmp.compress(Bitmap.CompressFormat.PNG, 100, os)
-            }
+        var os: OutputStream? = null
+        return try {
+            os = resolver.openOutputStream(uri)
+                ?: throw IllegalStateException("EDGE3250: openOutputStream devolvió null para $fileName")
 
-            values.clear()
-            values.put(MediaStore.Images.Media.IS_PENDING, 0)
-            resolver.update(uri, values, null, null)
-            return uri
+            bmp.compress(Bitmap.CompressFormat.PNG, 100, os)
+            os.flush()
+
+            val done = ContentValues().apply {
+                put(MediaStore.Images.Media.IS_PENDING, 0)
+            }
+            resolver.update(uri, done, null, null)
+
+            uri
         } catch (t: Throwable) {
-            Log.e(TAG, "saveU8ToGalleryAsPng3250 failed uri=$uri", t)
-
-            try {
-                resolver.delete(uri, null, null)
-            } catch (_: Throwable) {
-            }
-
-            return null
+            Log.e(TAG, "EDGE3250: saveBitmapPng falló $baseName3250", t)
+            null
         } finally {
             try {
-                bmp.recycle()
-            } catch (_: Throwable) {
-            }
-        }
-    }
-
-    private fun debugDumpEdgeTriplet3250(
-        ctx: Context,
-        w: Int,
-        h: Int,
-        edgesFullU8: ByteArray,
-        maskFullU8: ByteArray?,
-        debugTag: String,
-        grayRawU8: ByteArray? = null,
-        gateMaskU8: ByteArray? = null,
-        ribbonMaskU8: ByteArray? = null,
-        scoreU8: ByteArray? = null,
-        projNormalU8: ByteArray? = null,
-        tangentialU8: ByteArray? = null,
-        coherencyU8: ByteArray? = null,
-        gateNormalU8: ByteArray? = null
-    ) {
-        if (edgesFullU8.size != w * h) {
-            return
-        }
-
-        val ts = System.currentTimeMillis()
-
-        if (grayRawU8 != null && grayRawU8.size == w * h) {
-            saveU8ToGalleryAsPng3250(
-                ctx = ctx,
-                u8img = grayRawU8,
-                w = w,
-                h = h,
-                displayName = "EDGE_GRAY_RAW_${debugTag}_${ts}.png",
-                invert = false
-            )
-        }
-
-        if (gateMaskU8 != null && gateMaskU8.size == w * h) {
-            saveU8ToGalleryAsPng3250(
-                ctx = ctx,
-                u8img = gateMaskU8,
-                w = w,
-                h = h,
-                displayName = "EDGE_GATE_${debugTag}_${ts}.png",
-                invert = false
-            )
-        }
-
-        if (ribbonMaskU8 != null && ribbonMaskU8.size == w * h) {
-            saveU8ToGalleryAsPng3250(
-                ctx = ctx,
-                u8img = ribbonMaskU8,
-                w = w,
-                h = h,
-                displayName = "EDGE_RIBBON_${debugTag}_${ts}.png",
-                invert = false
-            )
-        }
-
-        if (scoreU8 != null && scoreU8.size == w * h) {
-            saveU8ToGalleryAsPng3250(
-                ctx = ctx,
-                u8img = scoreU8,
-                w = w,
-                h = h,
-                displayName = "EDGE_SCORE_${debugTag}_${ts}.png",
-                invert = false
-            )
-        }
-
-        if (projNormalU8 != null && projNormalU8.size == w * h) {
-            saveU8ToGalleryAsPng3250(
-                ctx = ctx,
-                u8img = projNormalU8,
-                w = w,
-                h = h,
-                displayName = "EDGE_PROJ_NORMAL_${debugTag}_${ts}.png",
-                invert = false
-            )
-        }
-
-        if (tangentialU8 != null && tangentialU8.size == w * h) {
-            saveU8ToGalleryAsPng3250(
-                ctx = ctx,
-                u8img = tangentialU8,
-                w = w,
-                h = h,
-                displayName = "EDGE_TANGENTIAL_${debugTag}_${ts}.png",
-                invert = false
-            )
-        }
-
-        if (coherencyU8 != null && coherencyU8.size == w * h) {
-            saveU8ToGalleryAsPng3250(
-                ctx = ctx,
-                u8img = coherencyU8,
-                w = w,
-                h = h,
-                displayName = "EDGE_COHERENCY_${debugTag}_${ts}.png",
-                invert = false
-            )
-        }
-
-        if (gateNormalU8 != null && gateNormalU8.size == w * h) {
-            saveU8ToGalleryAsPng3250(
-                ctx = ctx,
-                u8img = gateNormalU8,
-                w = w,
-                h = h,
-                displayName = "EDGE_GATE_NORMAL_${debugTag}_${ts}.png",
-                invert = false
-            )
-        }
-
-        saveU8ToGalleryAsPng3250(
-            ctx = ctx,
-            u8img = edgesFullU8,
-            w = w,
-            h = h,
-            displayName = "EDGE_FULL_${debugTag}_${ts}.png",
-            invert = false
-        )
-
-        if (maskFullU8 != null && maskFullU8.size == w * h) {
-            saveU8ToGalleryAsPng3250(
-                ctx = ctx,
-                u8img = maskFullU8,
-                w = w,
-                h = h,
-                displayName = "EDGE_MASK_${debugTag}_${ts}.png",
-                invert = false
-            )
-        }
-    }
-
-    private fun bitmapToGrayU83250(stillBmp: Bitmap): ByteArray {
-        val w = stillBmp.width
-        val h = stillBmp.height
-        val gray = ByteArray(w * h)
-        val row = IntArray(w)
-
-        for (y in 0 until h) {
-            stillBmp.getPixels(row, 0, w, 0, y, w, 1)
-            val off = y * w
-
-            for (x in 0 until w) {
-                val c = row[x]
-                val r = (c shr 16) and 0xFF
-                val g = (c shr 8) and 0xFF
-                val b = c and 0xFF
-                val yv = (77 * r + 150 * g + 29 * b + 128) shr 8
-                gray[off + x] = yv.toByte()
-            }
-        }
-
-        return gray
-    }
-
-    private fun byteMaskToMatU83250(src: ByteArray, w: Int, h: Int): Mat {
-        val mat = Mat(h, w, CvType.CV_8UC1)
-        mat.put(0, 0, src)
-        return mat
-    }
-
-    private fun matU8ToByteArray3250(src: Mat, w: Int, h: Int): ByteArray {
-        val out = ByteArray(w * h)
-        src.get(0, 0, out)
-        return out
-    }
-
-    private fun ellipseKernel3250(radiusPx: Int): Mat {
-        val r = radiusPx.coerceAtLeast(1)
-        val k = 2 * r + 1
-        return Imgproc.getStructuringElement(
-            Imgproc.MORPH_ELLIPSE,
-            Size(k.toDouble(), k.toDouble())
-        )
-    }
-
-    private fun countNonZeroU83250(src: ByteArray?): Int {
-        if (src == null) {
-            return 0
-        }
-
-        var n = 0
-        for (b in src) {
-            if ((b.toInt() and 0xFF) != 0) {
-                n++
-            }
-        }
-        return n
-    }
-
-    private fun computeRowBoundsFromMask3250(
-        src: ByteArray?,
-        w: Int,
-        h: Int
-    ): Pair<Int, Int> {
-        if (src == null || src.size != w * h) {
-            return 0 to (h - 1).coerceAtLeast(0)
-        }
-
-        var yMin = h
-        var yMax = -1
-
-        for (y in 0 until h) {
-            val off = y * w
-            var hit = false
-            for (x in 0 until w) {
-                if ((src[off + x].toInt() and 0xFF) != 0) {
-                    hit = true
-                    break
-                }
-            }
-            if (hit) {
-                if (y < yMin) {
-                    yMin = y
-                }
-                if (y > yMax) {
-                    yMax = y
-                }
-            }
-        }
-
-        if (yMax < yMin) {
-            return 0 to (h - 1).coerceAtLeast(0)
-        }
-        return yMin to yMax
-    }
-
-    private fun computeBottomFrac3250(
-        y: Int,
-        yMin: Int,
-        yMax: Int
-    ): Float {
-        val den = (yMax - yMin).coerceAtLeast(1)
-        return ((y - yMin).toFloat() / den.toFloat()).coerceIn(0f, 1f)
-    }
-
-    private fun fmt4(v: Float): String {
-        return String.format(Locale.US, "%.4f", v)
-    }
-
-    private fun percentileFromU8Hist3250(hist: IntArray, q: Float): Int {
-        var total = 0
-        for (c in hist) {
-            total += c
-        }
-
-        if (total <= 0) {
-            return 0
-        }
-
-        val target = (total * q).toInt().coerceIn(0, total - 1)
-        var acc = 0
-
-        for (i in hist.indices) {
-            acc += hist[i]
-            if (acc > target) {
-                return i
-            }
-        }
-
-        return hist.lastIndex
-    }
-
-    private fun computeThrHighU8_3250(maxScore: Int, p95: Int): Int {
-        val thrBase = max(EDGE_THR_MIN, (EDGE_THR_FRAC * maxScore.toFloat()).toInt())
-        val thrCap = max(EDGE_THR_MIN, (P95_CAP_K * p95.toFloat()).toInt())
-        return min(thrBase, thrCap).coerceAtLeast(EDGE_THR_MIN)
-    }
-
-    private fun quantizeDir3250(gx: Int, gy: Int, ax: Int, ay: Int): Int {
-        if (ax == 0 && ay == 0) {
-            return 0
-        }
-
-        if (ay * TAN22_DEN <= ax * TAN22_NUM) {
-            return 0
-        }
-
-        if (ay * TAN67_DEN >= ax * TAN67_NUM) {
-            return 2
-        }
-
-        return if ((gx xor gy) >= 0) {
-            1
-        } else {
-            3
-        }
-    }
-
-    private fun nmsNeighbors3250(
-        i: Int,
-        x: Int,
-        y: Int,
-        w: Int,
-        dir: Int
-    ): Pair<Int, Int> {
-        return when (dir) {
-            0 -> (i - 1) to (i + 1)
-            2 -> (i - w) to (i + w)
-            1 -> (i - w - 1) to (i + w + 1)
-            else -> (i - w + 1) to (i + w - 1)
-        }
-    }
-
-    private fun isHorizontalEdgeSeed3250(
-        edges: ByteArray,
-        dir: ByteArray,
-        idx: Int
-    ): Boolean {
-        if ((edges[idx].toInt() and 0xFF) == 0) {
-            return false
-        }
-        return (dir[idx].toInt() and 0xFF) == 2 || (dir[idx].toInt() and 0xFF) == 0xFF
-    }
-
-    private fun bridgeHorizontalGapsU83250(
-        edges: ByteArray,
-        dir: ByteArray,
-        w: Int,
-        h: Int,
-        maxGapPx: Int = 5
-    ): ByteArray {
-        if (edges.size != w * h || dir.size != w * h || w <= 2 || h <= 2) {
-            return edges
-        }
-
-        if (maxGapPx <= 0) {
-            return edges
-        }
-
-        val out = edges.copyOf()
-
-        for (y in 1 until h - 1) {
-            var x = 1
-
-            while (x < w - 1) {
-                val i0 = y * w + x
-
-                if (!isHorizontalEdgeSeed3250(edges, dir, i0)) {
-                    x++
-                    continue
-                }
-
-                var bridged = false
-                val xMax = min(w - 2, x + maxGapPx + 1)
-                var xr = x + 2
-
-                while (xr <= xMax) {
-                    val ir = y * w + xr
-
-                    if (isHorizontalEdgeSeed3250(edges, dir, ir)) {
-                        for (xx in (x + 1) until xr) {
-                            out[y * w + xx] = 0xFF.toByte()
-                        }
-                        x = xr
-                        bridged = true
-                        break
-                    }
-
-                    xr++
-                }
-
-                if (!bridged) {
-                    x++
-                }
-            }
-        }
-
-        return out
-    }
-
-    private fun computeDebugScale3250(w: Int, h: Int): Float {
-        val maxDim = max(w, h).toFloat()
-        return if (maxDim <= DEBUG_MAX_DIM_PX) {
-            1f
-        } else {
-            (DEBUG_MAX_DIM_PX / maxDim).coerceIn(0.10f, 1f)
-        }
-    }
-
-    private fun releaseQuiet3250(vararg mats: Mat) {
-        for (m in mats) {
-            try {
-                m.release()
+                os?.close()
             } catch (_: Throwable) {
             }
         }

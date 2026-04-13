@@ -11,6 +11,7 @@ import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
 
+
 /**
  * RimDetectorBlock3250 (EDGE-IN) — CENTER→OUT (INNER FIRST)
  *
@@ -57,58 +58,6 @@ object RimDetectorBlock3250 {
         if (DBG) Log.d(TAG, msg)
     }
 
-    // ==========================================================
-    // ÚNICA SEMÁNTICA DE MÁSCARA
-    // 0 = permitido (negro). !=0 = veto
-    // ==========================================================
-    private fun isMasked(maskU8: ByteArray?, idx: Int): Boolean =
-        maskU8 != null && ((maskU8[idx].toInt() and 0xFF) != 0)
-
-    // Alias 3250 para mantener compatibilidad de nombres sin cambiar semántica
-    private fun isMaskedPx3250(maskU8: ByteArray?, idx: Int): Boolean =
-        isMasked(maskU8, idx)
-
-    // ==========================================================
-    // DIRECCIÓN (dirU8) — asumimos dirección de GRADIENTE (NMS)
-    // bins típicos: 0=0°, 1=45°, 2=90°, 3=135°
-    // - Pared VERTICAL => gradiente HORIZONTAL => bin 0 (y diagonales toleradas)
-    // - Borde HORIZONTAL => gradiente VERTICAL => bin 2 (y diagonales toleradas)
-    // ==========================================================
-    private fun isVertEdgeDir(d: Int): Boolean {
-        val dd = d and 0xFF
-        if (dd == 255) return true
-        if (dd !in 0..3) return true
-        return (dd == 0 || dd == 1 || dd == 3) // vertical edge: grad ~0° (+ diag)
-    }
-
-    private fun isHorzEdgeDir(d: Int): Boolean {
-        val dd = d and 0xFF
-        if (dd == 255) return true
-        if (dd !in 0..3) return true
-        return (dd == 2 || dd == 1 || dd == 3) // horizontal edge: grad ~90° (+ diag)
-    }
-
-    private data class ArcPick(
-        val yMed: Int,
-        val poly: List<Pair<Int, Int>>,
-        val coverage: Float,
-        val continuity: Float
-    )
-
-    private data class InnerSeedRow3250(
-        val y: Int,
-        val leftX: Int,
-        val rightX: Int
-    )
-
-    private data class SideArcCandidatesLocal3250(
-        val innerLeft: List<PointF>,
-        val innerRight: List<PointF>,
-        val outerLeft: List<PointF>,
-        val outerRight: List<PointF>
-    )
-
-    // ==========================================================
     // API
     // ==========================================================
     fun detectRim(
@@ -117,6 +66,8 @@ object RimDetectorBlock3250 {
         maskU8: ByteArray? = null,
         w: Int,
         h: Int,
+        hScoreU8: ByteArray? = null,
+        vScoreU8: ByteArray? = null,
         roiGlobal: RectF,
         midlineXpx: Float,
         browBottomYpx: Float?,
@@ -126,9 +77,10 @@ object RimDetectorBlock3250 {
         profile3250: RimProfile3250,
         bridgeRowYpxGlobal: Float?,
         pupilGlobal: PointF?,
+        filPtsMm3250: List<PointF>? = null,
         debugTag: String,
         pxPerMmGuessFace: Float? = null
-    ): RimDetectPack3250? {
+    ): RimDetectPack3250?  {
 
         var stage = "ENTER"
         fun fail(code: String, msg: String): RimDetectPack3250? {
@@ -163,9 +115,9 @@ object RimDetectorBlock3250 {
 
         d(
             "RIM[$debugTag] profile=$profile3250 " +
-                    "filH=${f1(filHboxMm.toFloat())} filV=${f1((filVboxMm ?: Double.NaN).toFloat())} " +
-                    "overIn=${f2(filOverInnerMmPerSide3250.toFloat())} overEff=${f2(effectiveOverF)} " +
-                    "hboxInner=${f2(hboxInnerMmF)} vboxInner=${f2(vboxInnerMmF)}"
+                    "filH=${f13250(filHboxMm.toFloat())} filV=${f13250((filVboxMm ?: Double.NaN).toFloat())} " +
+                    "overIn=${f23250(filOverInnerMmPerSide3250.toFloat())} overEff=${f23250(effectiveOverF)} " +
+                    "hboxInner=${f23250(hboxInnerMmF)} vboxInner=${f23250(vboxInnerMmF)}"
         )
 
         stage = "EDGE_DENSITY"
@@ -191,7 +143,7 @@ object RimDetectorBlock3250 {
         val topMinAllowedY0 = if (browLocal == null) {
             0
         } else {
-            val pad = clampInt((h * 0.02f).roundToInt(), 6, 18)
+            val pad = clampInt3250((h * 0.02f).roundToInt(), 6, 18)
             (browLocal + pad).coerceIn(0, h - 1)
         }
 
@@ -201,7 +153,7 @@ object RimDetectorBlock3250 {
         val probeYLocal = run {
             val lo = (topMinAllowedY + 2).coerceIn(0, h - 1)
             val hi = (h - 3).coerceIn(0, h - 1)
-            clampInRange(probeYLocalRaw, lo, hi)
+            this.clampInRange3250(probeYLocalRaw, lo, hi)
         }
 
         d(
@@ -230,9 +182,9 @@ object RimDetectorBlock3250 {
                 }
                 val frac = n.toFloat() / (w.toFloat() * h.toFloat()).coerceAtLeast(1f)
                 if (n > 0) {
-                    Log.d(TAG, "MASK[$debugTag] n=$n frac=${f3(frac)} bbox=($minX,$minY)-($maxX,$maxY)")
+                    Log.d(TAG, "MASK[$debugTag] n=$n frac=${f33250(frac)} bbox=($minX,$minY)-($maxX,$maxY)")
                 } else {
-                    Log.d(TAG, "MASK[$debugTag] n=0 frac=${f3(frac)} bbox=none")
+                    Log.d(TAG, "MASK[$debugTag] n=0 frac=${f33250(frac)} bbox=none")
                 }
             } else {
                 Log.d(TAG, "MASK[$debugTag] noneOrBadSize size=${maskU8?.size ?: -1} expected=${w * h}")
@@ -257,12 +209,16 @@ object RimDetectorBlock3250 {
         if (!pxGuessBase.isFinite() || pxGuessBase <= 0f) {
             return fail("PX_GUESS", "pxGuessBase invalid=$pxGuessBase")
         }
-
+// Regla 3250:
+// La geometría del aro sólo existe si hay inner bilateral (A+B).
+// Top y Bottom sólo se buscan si existe inner.
+// Un estimado puede completar una geometría existente,
+// pero nunca crear geometría desde ausencia de observación.
 // ==========================================================
 // Search over scales
 // ==========================================================
         stage = "SCALES"
-        val scales = buildScales(SCALE_MIN, SCALE_MAX, SCALE_STEP)
+        val scales = buildScales3250(SCALE_MIN, SCALE_MAX, SCALE_STEP)
         if (scales.isEmpty()) return fail("SCALES", "empty scales")
 
         var bestConf = -1f
@@ -274,6 +230,7 @@ object RimDetectorBlock3250 {
         var bestSeedX = -1
         var bestScale = 1.0f
         var bestBottomPoly: List<Pair<Int, Int>> = emptyList()
+        var bestTopPoly: List<Pair<Int, Int>> = emptyList()
 
         var bestPartialConf = -1f
         var bestPartialLeft = -1
@@ -283,8 +240,11 @@ object RimDetectorBlock3250 {
         var bestPartialRefY = -1
         var bestPartialSeedX = -1
         var bestPartialScale = Float.NaN
+        var bestPartialTopPoly: List<Pair<Int, Int>> = emptyList()
         var bestPartialBottomPoly: List<Pair<Int, Int>> = emptyList()
-        var bestPartialBottomEstimated = false
+        var bestPartialNasalInnerPoly: List<Pair<Int, Int>> = emptyList()
+        var bestPartialTempleInnerPoly: List<Pair<Int, Int>> = emptyList()
+
 
         for (scale in scales) {
             val pxGuessThis = (pxGuessBase * scale).coerceIn(3.5f, 8.0f)
@@ -307,10 +267,14 @@ object RimDetectorBlock3250 {
             if (DBG) {
                 Log.d(
                     TAG,
-                    "RIMDBG[$debugTag] profile=$profile3250 S=${f2(scale)} " +
+                    "RIMDBG[$debugTag] profile=$profile3250 S=${f23250(scale)} " +
                             "seed=($seedXLocal,$probeYLocal) yRef=$probeYLocal " +
-                            "seedExpX=${f1(seedExpected)} seamX=${f1(seamXLocal)} side=${f1(sideSign)} " +
-                            "expW=${f1(expWpx)} gap=${f1(gapPx)} expHGuess=${f1(expHpxGuess)} pxG=${f2(pxGuessThis)} " +
+                            "seedExpX=${f13250(seedExpected)} seamX=${f13250(seamXLocal)} side=${f13250(sideSign)} " +
+                            "expW=${f13250(expWpx)} gap=${f13250(gapPx)} expHGuess=${f13250(expHpxGuess)} pxG=${
+                                f23250(
+                                    pxGuessThis
+                                )
+                            } " +
                             "distStart=$distStart maxDist=$maxDist"
                 )
             }
@@ -319,6 +283,7 @@ object RimDetectorBlock3250 {
                 edgesU8 = edgesU8,
                 dirU8 = dirU8,
                 maskU8 = maskU8,
+                vScoreU8=vScoreU8,
                 w = w,
                 h = h,
                 seedX = seedXLocal,
@@ -332,7 +297,7 @@ object RimDetectorBlock3250 {
                 if (DBG) {
                     Log.d(
                         TAG,
-                        "RIMDBG[$debugTag] S=${f2(scale)} LR_FAIL yRef=$probeYLocal " +
+                        "RIMDBG[$debugTag] S=${f23250(scale)} LR_FAIL yRef=$probeYLocal " +
                                 "seedX=$seedXLocal probe=$probeYLocal"
                     )
                 }
@@ -352,7 +317,7 @@ object RimDetectorBlock3250 {
                     val idx = yy * w + a
                     if ((edgesU8[idx].toInt() and 0xFF) != 0 && !isMaskedPx3250(maskU8, idx)) {
                         val ddir = if (dirU8 == null) 255 else (dirU8[idx].toInt() and 0xFF)
-                        if (isVertEdgeDir(ddir)) hitsL++
+                        if (isVertEdgeDir3250(ddir)) hitsL++
                     }
                 }
                 var hitsR = 0
@@ -360,50 +325,235 @@ object RimDetectorBlock3250 {
                     val idx = yy * w + b
                     if ((edgesU8[idx].toInt() and 0xFF) != 0 && !isMaskedPx3250(maskU8, idx)) {
                         val ddir = if (dirU8 == null) 255 else (dirU8[idx].toInt() and 0xFF)
-                        if (isVertEdgeDir(ddir)) hitsR++
+                        if (isVertEdgeDir3250(ddir)) hitsR++
                     }
                 }
 
                 val ratioWdbg = innerW.toFloat() / expWpx
                 Log.d(
                     TAG,
-                    "RIMDBG[$debugTag] S=${f2(scale)} LR_OK a=$a b=$b innerW=$innerW " +
-                            "ratioW=${f3(ratioWdbg)} yRef=$probeYLocal " +
+                    "RIMDBG[$debugTag] S=${f23250(scale)} LR_OK a=$a b=$b innerW=$innerW " +
+                            "ratioW=${f33250(ratioWdbg)} yRef=$probeYLocal " +
                             "dL=${abs(a - seedXLocal)} hitsL=$hitsL dR=${abs(b - seedXLocal)} hitsR=$hitsR"
                 )
-            }
+                }
 
             if (innerW < 60) {
-                if (DBG) Log.d(TAG, "RIMDBG[$debugTag] S=${f2(scale)} DROP innerW<60 innerW=$innerW")
+                if (DBG) Log.d(
+                    TAG,
+                    "RIMDBG[$debugTag] S=${f23250(scale)} DROP innerW<60 innerW=$innerW"
+                )
                 continue
             }
+            val obsInnerWpx = innerW.toFloat()
+            val usedInnerWpx = min(obsInnerWpx, expWpx)
 
             // ratioW: NO cortar candidates -> penalidad
-            val ratioW = innerW.toFloat() / expWpx
+            val ratioW = usedInnerWpx / expWpx
             val ratioPenalty = if (ratioW !in W_RATIO_MIN..W_RATIO_MAX) {
                 if (DBG) {
                     Log.d(
                         TAG,
-                        "RIMDBG[$debugTag] S=${f2(scale)} RATIO_PEN ratioW=${f3(ratioW)} " +
-                                "expW=${f1(expWpx)} innerW=$innerW"
+                        "RIMDBG[$debugTag] S=${f23250(scale)} RATIO_PEN ratioW=${f33250(ratioW)} " +
+                                "expW=${f13250(expWpx)} innerW=$innerW"
                     )
                 }
                 (1f - 1.1f * abs(1f - ratioW)).coerceIn(0.15f, 0.95f)
             } else {
                 1f
             }
-
-            val pxPerMmX = (innerW.toFloat() / hboxInnerMmF).takeIf { it.isFinite() && it > 0f } ?: run {
+            val pxPerMmX = (usedInnerWpx / hboxInnerMmF).takeIf { it.isFinite() && it > 0f } ?: run {
                 if (DBG) {
                     Log.d(
                         TAG,
-                        "RIMDBG[$debugTag] S=${f2(scale)} DROP pxPerMmX invalid innerW=$innerW hboxInner=$hboxInnerMmF"
+                        "RIMDBG[$debugTag] S=${this.f23250(scale)} DROP pxPerMmX invalid " +
+                                "obsW=$obsInnerWpx expW=$expWpx hboxInner=$hboxInnerMmF"
                     )
                 }
                 continue
             }
+            if (DBG) {
+                Log.d(
+                    TAG,
+                    "RIMSCALE[$debugTag] S=${f23250(scale)} " +
+                            "obsW=${f23250(obsInnerWpx)} expW=${f23250(expWpx)} " +
+                            "usedW=${f23250(usedInnerWpx)} pxUsed=${f33250(pxPerMmX)}"
+                )
+            }
+            val filExpectedY = expectedTopBottomFromFilAtSeed3250(
+                filPtsMm = filPtsMm3250,
+                probeYLocal = probeYLocal,
+                pxPerMmX = pxPerMmX
+            )
+
+            val expectedTopRawY =
+                filExpectedY?.topY
+                    ?: if (vboxInnerMmF > 1e-3f) {
+                        (probeYLocal - 0.5f * vboxInnerMmF * pxPerMmX).roundToInt()
+                    } else {
+                        null
+                    }
+
+            val expectedBottomY = filExpectedY?.bottomY
+                ?.coerceIn(topMinAllowedY, h - 1)
+                ?: if (vboxInnerMmF > 1e-3f) {
+                    (probeYLocal + 0.5f * vboxInnerMmF * pxPerMmX)
+                        .roundToInt()
+                        .coerceIn(topMinAllowedY, h - 1)
+                } else {
+                    null
+                }
+
+            val minOuterGapBottomPx = when (profile3250) {
+                RimProfile3250.FULL_RIM ->
+                    max(3, (0.60f * pxPerMmX).roundToInt())
+
+                RimProfile3250.RANURADO ->
+                    max(2, (0.35f * pxPerMmX).roundToInt())
+
+                RimProfile3250.PERFORADO ->
+                    0
+            }
+
+            val maxOuterGapBottomPx = when (profile3250) {
+                RimProfile3250.FULL_RIM ->
+                    max(
+                        minOuterGapBottomPx + 2,
+                        (4.50f * pxPerMmX).roundToInt()
+                    )
+
+                RimProfile3250.RANURADO ->
+                    max(
+                        minOuterGapBottomPx + 2,
+                        (2.50f * pxPerMmX).roundToInt()
+                    )
+
+                RimProfile3250.PERFORADO ->
+                    0
+            }
+
+            val bottomTolPx = when (profile3250) {
+                RimProfile3250.FULL_RIM ->
+                    max(12, (0.80f * pxPerMmX).roundToInt())
+
+                RimProfile3250.RANURADO ->
+                    max(10, (1.00f * pxPerMmX).roundToInt())
+
+                RimProfile3250.PERFORADO ->
+                    max(14, (1.25f * pxPerMmX).roundToInt())
+            }
+
+            val bottomSeedY =
+                probeYLocal.coerceIn(0, h - 1)
+
+            val bottomYMax = when (profile3250) {
+                RimProfile3250.FULL_RIM ->
+                    (probeYLocal + max(96, (1.05f * expWpx).roundToInt()))
+                        .coerceIn(bottomSeedY + 12, h - 1)
+
+                RimProfile3250.RANURADO ->
+                    (probeYLocal + max(112, (1.15f * expWpx).roundToInt()))
+                        .coerceIn(bottomSeedY + 12, h - 1)
+
+                RimProfile3250.PERFORADO ->
+                    (probeYLocal + max(128, (1.25f * expWpx).roundToInt()))
+                        .coerceIn(bottomSeedY + 12, h - 1)
+            }
+
+            val bottomExpectedTolPx = when (profile3250) {
+                RimProfile3250.FULL_RIM ->
+                    max(bottomTolPx, (0.45f * expWpx).roundToInt())
+
+                RimProfile3250.RANURADO ->
+                    max(bottomTolPx, (0.55f * expWpx).roundToInt())
+
+                RimProfile3250.PERFORADO ->
+                    max(bottomTolPx, (0.65f * expWpx).roundToInt())
+            }
 
             val bottomPick = pickBottomInsideOut(
+                edgesU8 = edgesU8,
+                dirU8 = dirU8,
+                maskU8 = maskU8,
+                hScoreU8 = hScoreU8,
+                w = w,
+                h = h,
+                leftX = a,
+                rightX = b,
+                ySeed = bottomSeedY,
+                yMax = bottomYMax,
+                topMinAllowedY = topMinAllowedY,
+                stepX = 4,
+                minHits = 28,
+                minCoverage = 0.50f,
+                contJumpPx = CONT_JUMP_PX,
+                profile3250 = profile3250,
+                minOuterGapPx = minOuterGapBottomPx,
+                maxOuterGapPx = maxOuterGapBottomPx,
+                expectedBottomY = expectedBottomY,
+                expectedTolPx = bottomExpectedTolPx
+            )
+
+            if (bottomPick == null) {
+                if (DBG) {
+                    Log.d(
+                        TAG,
+                        "RIMDBG[$debugTag] S=${f23250(scale)} BOTTOM_FAIL a=$a b=$b " +
+                                "ySeed=$bottomSeedY yMax=$bottomYMax topMin=$topMinAllowedY " +
+                                "expBot=${expectedBottomY ?: -1} tol=$bottomExpectedTolPx " +
+                                "gap=[$minOuterGapBottomPx..$maxOuterGapBottomPx] " +
+                                "profile=$profile3250"
+                    )
+                }
+            } else {
+                if (DBG) {
+                    Log.d(
+                        TAG,
+                        "RIMDBG[$debugTag] S=${f23250(scale)} BOTTOM_OK " +
+                                "yMed=${bottomPick.yMed} yMax=${bottomPick.yMax} yBot=${bottomPick.yBottomCoherent} " +
+                                "hits=${bottomPick.poly.size} cov=${f33250(bottomPick.coverage)} " +
+                                "cont=${f33250(bottomPick.continuity)}"
+                    )
+                }
+            }
+
+            val topTolPx = max(14, (1.20f * pxPerMmX).roundToInt())
+
+            val yCapTop = (probeYLocal - TOP_SEARCH_PAD).coerceIn(0, h - 1)
+
+            val expectedTopForSearch =
+                when {
+                    bottomPick != null && vboxInnerMmF > 1e-3f -> {
+                        (bottomPick.yMax - vboxInnerMmF * pxPerMmX).roundToInt()
+                    }
+
+                    expectedTopRawY != null -> {
+                        expectedTopRawY
+                    }
+
+                    else -> {
+                        probeYLocal - max(24, (0.20f * expWpx).roundToInt())
+                    }
+                }
+
+            val expectedTopY =
+                expectedTopForSearch.coerceIn(0, yCapTop)
+
+            val topSearchUpPx = 40
+
+            val topSearchMinY =
+                (expectedTopY - topSearchUpPx)
+                    .coerceIn(0, yCapTop)
+
+            if (DBG) {
+                Log.d(
+                    TAG,
+                    "TOPWIN[$debugTag] a=$a b=$b probe=$probeYLocal topMin=$topMinAllowedY " +
+                            "topSearchMin=$topSearchMinY expTop=$expectedTopY tol=$topTolPx"
+                )
+            }
+
+            val topPick = pickTopInsideOut3250(
                 edgesU8 = edgesU8,
                 dirU8 = dirU8,
                 maskU8 = maskU8,
@@ -412,139 +562,143 @@ object RimDetectorBlock3250 {
                 leftX = a,
                 rightX = b,
                 ySeed = probeYLocal,
-                yMax = (h - 1),
-                topMinAllowedY = topMinAllowedY,
+                yMin = topSearchMinY,
                 stepX = 4,
-                minHits = 28,
-                minCoverage = 0.50f,
-                contJumpPx = CONT_JUMP_PX
+                minHits = 20,
+                minCoverage = 0.40f,
+                contJumpPx = CONT_JUMP_PX,
+                expectedTopY = expectedTopY,
+                expectedTolPx = topTolPx
             )
-
-            if (bottomPick == null) {
-                if (DBG) {
-                    Log.d(
-                        TAG,
-                        "RIMDBG[$debugTag] S=${f2(scale)} BOTTOM_FAIL a=$a b=$b " +
-                                "ySeed=$probeYLocal topMin=$topMinAllowedY"
-                    )
-                }
-
-                // ---------------------------------------------
-                // FALLBACK PARCIAL: LR_OK pero sin bottom
-                // ---------------------------------------------
-                val yCapPartial = (probeYLocal - TOP_SEARCH_PAD).coerceIn(0, h - 1)
-                val topYPartial = (topMinAllowedY + 2).coerceAtMost(yCapPartial)
-
-                val bottomYPartial = if (expHpxGuess.isFinite() && expHpxGuess > 60f) {
-                    (topYPartial + expHpxGuess.roundToInt()).coerceIn(topYPartial + 8, h - 1)
-                } else {
-                    (probeYLocal + (0.70f * expWpx).roundToInt()).coerceIn(topYPartial + 8, h - 1)
-                }
-                fun clamp01(v: Float): Float = v.coerceIn(0f, 1f)
-
-                if (bottomYPartial > topYPartial) {
-                    val partialConf = (
-                            0.55f * ratioPenalty +
-                                    0.25f * clamp01((innerW.toFloat() / expWpx).coerceIn(0.70f, 1.30f)) +
-                                    0.20f * clamp01((innerW - 60f) / 180f)
-                            ).coerceIn(0f, 0.79f)
-
-                    if (partialConf > bestPartialConf) {
-                        bestPartialConf = partialConf
-                        bestPartialLeft = a
-                        bestPartialRight = b
-                        bestPartialTop = topYPartial
-                        bestPartialBottom = bottomYPartial
-                        bestPartialRefY = probeYLocal
-                        bestPartialSeedX = seedXLocal
-                        bestPartialScale = scale
-                        bestPartialBottomPoly = emptyList()
-                        bestPartialBottomEstimated = true
-                    }
-
-                    if (DBG) {
-                        Log.d(
-                            TAG,
-                            "RIMDBG[$debugTag] S=${f2(scale)} PARTIAL_OK " +
-                                    "a=$a b=$b innerW=$innerW ratioW=${f3(ratioW)} " +
-                                    "top=$topYPartial botEst=$bottomYPartial conf=${f3(partialConf)}"
-                        )
-                    }
-                }
-
-                continue
-            } else {
-                if (DBG) {
-                    Log.d(
-                        TAG,
-                        "RIMDBG[$debugTag] S=${f2(scale)} BOTTOM_OK yMed=${bottomPick.yMed} " +
-                                "hits=${bottomPick.poly.size} cov=${f3(bottomPick.coverage)} " +
-                                "cont=${f3(bottomPick.continuity)}"
-                    )
-                }
-            }
-
-            val bottomY = bottomPick.yMed
-
-            val yCap = (probeYLocal - TOP_SEARCH_PAD).coerceIn(0, h - 1)
-            val expHpx = if (vboxInnerMmF > 1e-3f) (vboxInnerMmF * pxPerMmX) else Float.NaN
-            val topY = if (expHpx.isFinite() && expHpx > 60f) {
-                (bottomY - expHpx).roundToInt().coerceIn(topMinAllowedY, yCap)
-            } else {
-                (topMinAllowedY + 2).coerceAtMost(yCap)
-            }
-
-            val innerH = (bottomY - topY).coerceAtLeast(1)
-            val minH0 = max(70, (h * 0.18f).roundToInt())
-            val maxH0 = (h * 0.92f).roundToInt()
-            if (innerH !in minH0..maxH0) {
-                if (DBG) {
-                    Log.d(
-                        TAG,
-                        "RIMDBG[$debugTag] S=${f2(scale)} DROP innerH=$innerH " +
-                                "range=[$minH0..$maxH0] topY=$topY bottomY=$bottomY"
-                    )
-                }
-                continue
-            }
-
-            val confCoverage = norm013250(bottomPick.coverage, 0.55f, 0.95f)
-            val confContinuity = norm013250(bottomPick.continuity, 0.65f, 0.98f)
-            val confSamples = norm013250(bottomPick.poly.size.toFloat(), 28f, 60f)
-
-            var conf = (
-                    0.55f * confCoverage +
-                            0.35f * confContinuity +
-                            0.10f * confSamples
-                    ).coerceIn(0f, 1f)
-
-            conf *= (0.90f + 0.10f * ratioPenalty).coerceIn(0.90f, 1.00f)
-            conf = conf.coerceIn(0f, 1f)
 
             if (DBG) {
                 Log.d(
                     TAG,
-                    "RIMCONF[$debugTag] S=${f2(scale)} " +
-                            "cov=${f3(bottomPick.coverage)} cont=${f3(bottomPick.continuity)} " +
-                            "n=${bottomPick.poly.size} " +
-                            "cCov=${f3(confCoverage)} cCont=${f3(confContinuity)} cN=${f3(confSamples)} " +
-                            "ratioPen=${f3(ratioPenalty)} conf=${f3(conf)}"
+                    "RIMTOP[$debugTag] S=${f23250(scale)} " +
+                            "expTop=$expectedTopY " +
+                            "obsTop=${topPick?.yMed ?: -1} " +
+                            "cov=${f33250(topPick?.coverage ?: 0f)} " +
+                            "cont=${f33250(topPick?.continuity ?: 0f)} " +
+                            "conf=${f33250(topPick?.confidence ?: 0f)}"
                 )
             }
 
-            if (conf > bestConf) {
-                bestConf = conf
-                bestLeft = a
-                bestRight = b
-                bestTop = topY
-                bestBottom = bottomY
-                bestScale = scale
-                bestBottomPoly = bottomPick.poly
-                bestRefY = probeYLocal
-                bestSeedX = seedXLocal
+            val hasTopObs =
+                topPick != null &&
+                        topPick.coverage > 0f &&
+                        topPick.continuity > 0f &&
+                        topPick.confidence > 0f
+
+            val hasBottomObs =
+                bottomPick != null
+
+            val cand0 =
+                when {
+                    hasTopObs && hasBottomObs -> {
+                        buildNormalCandidate3250(
+                            debugTag = debugTag,
+                            scale = scale,
+                            ratioPenalty = ratioPenalty,
+                            topSearchMinY = topSearchMinY,
+                            topExpectedY = expectedTopY,
+                            probeYLocal = probeYLocal,
+                            vboxInnerMmF = vboxInnerMmF,
+                            pxPerMmX = pxPerMmX,
+                            bottomPick = bottomPick!!,
+                            topPick = topPick,
+                            h = h
+                        )
+                    }
+
+                    hasTopObs || hasBottomObs -> {
+                        val expHpxGuessUsed =
+                            if (expWpx > 1e-3f) {
+                                expHpxGuess * (usedInnerWpx / expWpx)
+                            } else {
+                                expHpxGuess
+                            }
+
+                        buildPartialCandidate3250(
+                            debugTag = debugTag,
+                            scale = scale,
+                            ratioPenalty = ratioPenalty,
+                            probeYLocal = probeYLocal,
+                            topSearchMinY = topSearchMinY,
+                            topExpectedY = expectedTopY,
+                            topPick = topPick,
+                            bottomPick = bottomPick,
+                            profile3250 = profile3250,
+                            expHpxGuess = expHpxGuessUsed,
+                            expWpx = expWpx,
+                            innerW = usedInnerWpx.roundToInt(),
+                            h = h
+                        )
+                    }
+
+                    else -> {
+                        null
+                    }
+                }
+
+            val candBase = cand0?.copy(
+                left = a,
+                right = b,
+                refY = probeYLocal,
+                seedX = seedXLocal
+            ) ?: continue
+
+            val cand = if (candBase.isPartial) {
+                val nasalX = if (nasalAtLeft) a else b
+                val templeX = if (nasalAtLeft) b else a
+
+                candBase.copy(
+                    nasalInnerPoly = buildVerticalGuidePoly3250(
+                        x = nasalX,
+                        yTop = candBase.top,
+                        yBottom = candBase.bottom,
+                        h = h
+                    ),
+                    templeInnerPoly = buildVerticalGuidePoly3250(
+                        x = templeX,
+                        yTop = candBase.top,
+                        yBottom = candBase.bottom,
+                        h = h
+                    )
+                )
+            } else {
+                candBase
+            }
+
+            if (cand.isPartial) {
+                if (cand.conf > bestPartialConf) {
+                    bestPartialConf = cand.conf
+                    bestPartialLeft = cand.left
+                    bestPartialRight = cand.right
+                    bestPartialTop = cand.top
+                    bestPartialBottom = cand.bottom
+                    bestPartialRefY = cand.refY
+                    bestPartialSeedX = cand.seedX
+                    bestPartialScale = cand.scale
+                    bestPartialBottomPoly = cand.bottomPoly
+                    bestPartialTopPoly = cand.topPoly
+                    bestPartialNasalInnerPoly = cand.nasalInnerPoly
+                    bestPartialTempleInnerPoly = cand.templeInnerPoly
+                }
+            } else {
+                if (cand.conf > bestConf) {
+                    bestConf = cand.conf
+                    bestLeft = cand.left
+                    bestRight = cand.right
+                    bestTop = cand.top
+                    bestBottom = cand.bottom
+                    bestScale = cand.scale
+                    bestBottomPoly = cand.bottomPoly
+                    bestTopPoly = cand.topPoly
+                    bestRefY = cand.refY
+                    bestSeedX = cand.seedX
+                }
             }
         }
-
         stage = "BEST_FINAL"
 
 // ----------------------------------------------------------
@@ -561,10 +715,12 @@ object RimDetectorBlock3250 {
                 bestPartialSeedX >= 0
             ) {
                 d(
-                    "RIM[$debugTag] BEST_PARTIAL profile=$profile3250 conf=${f3(bestPartialConf)} " +
+                    "RIM[$debugTag] BEST_PARTIAL profile=$profile3250 conf=${f33250(bestPartialConf)} " +
                             "L/R=$bestPartialLeft/$bestPartialRight " +
                             "T/B=$bestPartialTop/$bestPartialBottom " +
-                            "scale=${f2(bestPartialScale)} refY=$bestPartialRefY seedX=$bestPartialSeedX"
+                            "topPts=${bestPartialTopPoly.size} " +
+                            "bottomPts=${bestPartialBottomPoly.size} " +
+                            "scale=${f23250(bestPartialScale)} refY=$bestPartialRefY seedX=$bestPartialSeedX"
                 )
 
                 val innerWpx = (bestPartialRight - bestPartialLeft).toFloat().coerceAtLeast(1f)
@@ -580,6 +736,7 @@ object RimDetectorBlock3250 {
                 val refYGlobal = bestPartialRefY.toFloat() + roiTopG
                 val seedXGlobal = bestPartialSeedX.toFloat() + roiLeftG
 
+
                 val res = RimDetectionResult(
                     ok = true,
                     confidence = bestPartialConf,
@@ -589,11 +746,20 @@ object RimDetectorBlock3250 {
                     topYpx = bestPartialTop.toFloat() + roiTopG,
                     bottomYpx = bestPartialBottom.toFloat() + roiTopG,
 
+
                     innerLeftXpx = innerL,
                     innerRightXpx = innerR,
 
-                    nasalInnerPolylinePx = null,
-                    templeInnerPolylinePx = null,
+                    nasalInnerPolylinePx = pairPolylineToGlobal3250(
+                        pts = bestPartialNasalInnerPoly,
+                        roiLeft = roiLeftG,
+                        roiTop = roiTopG
+                    ),
+                    templeInnerPolylinePx = pairPolylineToGlobal3250(
+                        pts = bestPartialTempleInnerPoly,
+                        roiLeft = roiLeftG,
+                        roiTop = roiTopG
+                    ),
                     nasalOuterPolylinePx = null,
                     templeOuterPolylinePx = null,
 
@@ -605,9 +771,16 @@ object RimDetectorBlock3250 {
 
                     wallsYpx = refYGlobal,
                     seedXpx = seedXGlobal,
-
-                    topPolylinePx = null,
-                    bottomPolylinePx = null,
+                    topPolylinePx = pairPolylineToGlobal3250(
+                        pts = bestPartialTopPoly,
+                        roiLeft = roiLeftG,
+                        roiTop = roiTopG
+                    ),
+                    bottomPolylinePx = pairPolylineToGlobal3250(
+                        pts = bestPartialBottomPoly,
+                        roiLeft = roiLeftG,
+                        roiTop = roiTopG
+                    ),
                     innerArcPolylinePx = null,
                     outerLeftXpx = null,
                     outerRightXpx = null,
@@ -625,7 +798,7 @@ object RimDetectorBlock3250 {
             return fail("NO_CAND", "no candidate survived")
         }
 
-        if (bestConf < OK_CONF_MIN) return fail("LOW_CONF", "bestConf=${f3(bestConf)} < $OK_CONF_MIN")
+        if (bestConf < OK_CONF_MIN) return fail("LOW_CONF", "bestConf=${f33250(bestConf)} < $OK_CONF_MIN")
         if (bestLeft < 0 || bestRight < 0 || bestBottom < 0 || bestTop < 0) {
             return fail("BEST_INV", "best coords invalid")
         }
@@ -638,9 +811,9 @@ object RimDetectorBlock3250 {
             ?: return fail("PXMM", "pxPerMmX invalid")
 
         d(
-            "RIM[$debugTag] BEST profile=$profile3250 conf=${f3(bestConf)} " +
-                    "L/R=$bestLeft/$bestRight W=${f1(innerWpx)} pxPerMmX=${f3(pxPerMmXFinal)} " +
-                    "T/B=$bestTop/$bestBottom scale=${f2(bestScale)} " +
+            "RIM[$debugTag] BEST profile=$profile3250 conf=${f33250(bestConf)} " +
+                    "L/R=$bestLeft/$bestRight W=${f13250(innerWpx)} pxPerMmX=${f33250(pxPerMmXFinal)} " +
+                    "T/B=$bestTop/$bestBottom scale=${f23250(bestScale)} " +
                     "refY=$bestRefY seedX=$bestSeedX"
         )
 
@@ -671,11 +844,27 @@ object RimDetectorBlock3250 {
             maxOuterGapPx = maxOuterGapPx,
             profile3250 = profile3250
         )
+        val innerLeftValidated = keepPolylineNearXRef3250(
+            pts = sideArcLocal.innerLeft,
+            xRef = bestLeft.toFloat(),
+            sideSign = -1
+        )
 
-        val innerLeftPolyG = localPolylineToGlobal3250(sideArcLocal.innerLeft, roiLeftG, roiTopG)
-        val innerRightPolyG = localPolylineToGlobal3250(sideArcLocal.innerRight, roiLeftG, roiTopG)
-        val outerLeftPolyG = localPolylineToGlobal3250(sideArcLocal.outerLeft, roiLeftG, roiTopG)
-        val outerRightPolyG = localPolylineToGlobal3250(sideArcLocal.outerRight, roiLeftG, roiTopG)
+        val innerRightValidated = keepPolylineNearXRef3250(
+            pts = sideArcLocal.innerRight,
+            xRef = bestRight.toFloat(),
+            sideSign = +1
+        )
+
+        val sideArcLocalValidated = sideArcLocal.copy(
+            innerLeft = innerLeftValidated,
+            innerRight = innerRightValidated
+        )
+
+        val innerLeftPolyG = localPolylineToGlobal3250(sideArcLocalValidated.innerLeft, roiLeftG, roiTopG)
+        val innerRightPolyG = localPolylineToGlobal3250(sideArcLocalValidated.innerRight, roiLeftG, roiTopG)
+        val outerLeftPolyG = localPolylineToGlobal3250(sideArcLocalValidated.outerLeft, roiLeftG, roiTopG)
+        val outerRightPolyG = localPolylineToGlobal3250(sideArcLocalValidated.outerRight, roiLeftG, roiTopG)
 
         val nasalInnerPolyG = if (nasalAtLeft) innerLeftPolyG else innerRightPolyG
         val templeInnerPolyG = if (nasalAtLeft) innerRightPolyG else innerLeftPolyG
@@ -703,11 +892,12 @@ object RimDetectorBlock3250 {
             )
         }
 
-        val nasalInnerLocal = if (nasalAtLeft) sideArcLocal.innerLeft else sideArcLocal.innerRight
-        val templeInnerLocal = if (nasalAtLeft) sideArcLocal.innerRight else sideArcLocal.innerLeft
+        val nasalInnerLocal = if (nasalAtLeft) sideArcLocalValidated.innerLeft else sideArcLocalValidated.innerRight
+        val templeInnerLocal = if (nasalAtLeft) sideArcLocalValidated.innerRight else sideArcLocalValidated.innerLeft
 
         val innerArcLocal = buildOfficialInnerArc3250(
             bottomLocal = bestBottomPoly.map { (x, y) -> PointF(x.toFloat(), y.toFloat()) },
+            topLocal = bestTopPoly.map { (x, y) -> PointF(x.toFloat(), y.toFloat()) },
             nasalLocal = nasalInnerLocal,
             templeLocal = templeInnerLocal,
             maxJoinDistPx = 14f,
@@ -718,6 +908,17 @@ object RimDetectorBlock3250 {
         val innerArcGlobal =
             if (innerArcLocal.isNotEmpty()) localPolylineToGlobal3250(innerArcLocal, roiLeftG, roiTopG)
             else null
+        val topPolyGlobal =
+            if (bestTopPoly.isNotEmpty()) {
+                pairPolylineToGlobal3250(
+                    pts = bestTopPoly,
+                    roiLeft = roiLeftG,
+                    roiTop = roiTopG
+                )
+            } else {
+                null
+            }
+
 
         val res = RimDetectionResult(
             ok = true,
@@ -746,7 +947,7 @@ object RimDetectorBlock3250 {
             wallsYpx = refYGlobal,
             seedXpx = seedXGlobal,
 
-            topPolylinePx = null,
+            topPolylinePx = topPolyGlobal,
             bottomPolylinePx = bottomPolyGlobal,
             innerArcPolylinePx = innerArcGlobal,
             outerLeftXpx = null,
@@ -836,10 +1037,11 @@ object RimDetectorBlock3250 {
         val bottomY = clampY(primary.bottomYpx)
         val heightPx = (bottomY - topY).coerceAtLeast(1f)
 
-        // bottom poly: mirror + clamp + orden por X
+        // bottom/top poly: mirror + clamp + orden por X
         val bottomPoly = mirrorPolyX(primary.bottomPolylinePx)
+        val topPoly = mirrorPolyX(primary.topPolylinePx)
 
-        // mirror de arcos candidatos laterales
+// mirror de arcos candidatos laterales
         val nasalInnerPoly = mirrorPolyY(primary.nasalInnerPolylinePx)
         val templeInnerPoly = mirrorPolyY(primary.templeInnerPolylinePx)
         val nasalOuterPoly = mirrorPolyY(primary.nasalOuterPolylinePx)
@@ -848,13 +1050,13 @@ object RimDetectorBlock3250 {
         val innerArcPolylinePx =
             buildOfficialInnerArc3250(
                 bottomLocal = bottomPoly ?: emptyList(),
+                topLocal = topPoly ?: emptyList(),
                 nasalLocal = nasalInnerPoly ?: emptyList(),
                 templeLocal = templeInnerPoly ?: emptyList(),
                 maxJoinDistPx = 14f,
                 maxStepDistPx = 12f,
                 minRunPts = 6
             ).takeIf { it.isNotEmpty() }
-
         // anchors
         val wallsY = clampY(primary.wallsYpx)
         val seedX = clampX(mirrorX(primary.seedXpx))
@@ -863,9 +1065,9 @@ object RimDetectorBlock3250 {
 
         Log.w(
             TAG,
-            "RIM[$debugTag] MIRROR_FROM_$srcTag conf=${f3(conf)} " +
-                    "innerL/R=${f1(innerL)}/${f1(innerR)} W=${f1(innerW)} " +
-                    "wallsY=${f1(wallsY)} seedX=${f1(seedX)} midX=${f1(midlineXpx)} " +
+            "RIM[$debugTag] MIRROR_FROM_$srcTag conf=${f33250(conf)} " +
+                    "innerL/R=${f13250(innerL)}/${f13250(innerR)} W=${f13250(innerW)} " +
+                    "wallsY=${f13250(wallsY)} seedX=${f13250(seedX)} midX=${f13250(midlineXpx)} " +
                     "nIn=${nasalInnerPoly?.size ?: 0} tIn=${templeInnerPoly?.size ?: 0} " +
                     "nOut=${nasalOuterPoly?.size ?: 0} tOut=${templeOuterPoly?.size ?: 0}"
         )
@@ -888,7 +1090,7 @@ object RimDetectorBlock3250 {
             heightPx = heightPx,
             innerWidthPx = innerW,
 
-            topPolylinePx = null,
+            topPolylinePx = topPoly,
             bottomPolylinePx = bottomPoly,
 
             wallsYpx = wallsY,
@@ -939,10 +1141,12 @@ object RimDetectorBlock3250 {
      * - menor castigo por expectedY
      * - fallback extra con ventana más amplia antes de declarar miss
      */
+
     private fun pickBottomInsideOut(
         edgesU8: ByteArray,
         dirU8: ByteArray?,
         maskU8: ByteArray?,
+        hScoreU8: ByteArray? = null,
         w: Int,
         h: Int,
         leftX: Int,
@@ -954,6 +1158,9 @@ object RimDetectorBlock3250 {
         minHits: Int,
         minCoverage: Float,
         contJumpPx: Int,
+        profile3250: RimProfile3250,
+        minOuterGapPx: Int = 0,
+        maxOuterGapPx: Int = 0,
         expectedBottomY: Int? = null,
         expectedTolPx: Int = 42
     ): ArcPick? {
@@ -970,6 +1177,9 @@ object RimDetectorBlock3250 {
         val ySeed0 = ySeed.coerceIn(yLo, yHi)
 
         fun findSeedAtX(x: Int): Int {
+            val x0 = (x - stepX * 2).coerceIn(xa, xb)
+            val x1 = (x + stepX * 2).coerceIn(xa, xb)
+
             val y0Soft = expectedBottomY?.let { (it - expectedTolPx).coerceIn(yLo, yHi) } ?: yLo
             val y1Soft = expectedBottomY?.let { (it + expectedTolPx).coerceIn(yLo, yHi) } ?: yHi
 
@@ -977,11 +1187,16 @@ object RimDetectorBlock3250 {
                 edgesU8 = edgesU8,
                 dirU8 = dirU8,
                 maskU8 = maskU8,
+                hScoreU8 = hScoreU8,
                 w = w,
-                x = x,
+                a = x0,
+                b = x1,
                 y0 = max(ySeed0, y0Soft),
                 y1 = y1Soft,
-                expectedY = expectedBottomY ?: ySeed0
+                expectedY = expectedBottomY ?: ySeed0,
+                profile3250 = profile3250,
+                minOuterGapPx = minOuterGapPx,
+                maxOuterGapPx = maxOuterGapPx
             )
 
             if (y < 0) {
@@ -989,33 +1204,42 @@ object RimDetectorBlock3250 {
                     edgesU8 = edgesU8,
                     dirU8 = dirU8,
                     maskU8 = maskU8,
+                    hScoreU8 = hScoreU8,
                     w = w,
-                    x = x,
+                    a = x0,
+                    b = x1,
                     y0 = ySeed0,
                     y1 = yHi,
-                    expectedY = expectedBottomY ?: ySeed0
+                    expectedY = expectedBottomY ?: ySeed0,
+                    profile3250 = profile3250,
+                    minOuterGapPx = minOuterGapPx,
+                    maxOuterGapPx = maxOuterGapPx
                 )
             }
 
-            // fallback extra: seed permisiva en ventana más amplia
             if (y < 0) {
                 val y0Wide = (ySeed0 - contJumpPx * 3).coerceIn(yLo, yHi)
                 val y1Wide = (ySeed0 + contJumpPx * 5).coerceIn(yLo, yHi)
+
                 y = findBestBottomEdgeInWindow3250(
                     edgesU8 = edgesU8,
                     dirU8 = dirU8,
                     maskU8 = maskU8,
+                    hScoreU8 = hScoreU8,
                     w = w,
-                    x = x,
+                    a = x0,
+                    b = x1,
                     y0 = y0Wide,
                     y1 = y1Wide,
-                    expectedY = expectedBottomY ?: ySeed0
+                    expectedY = expectedBottomY ?: ySeed0,
+                    profile3250 = profile3250,
+                    minOuterGapPx = minOuterGapPx,
+                    maxOuterGapPx = maxOuterGapPx
                 )
             }
 
             return y
         }
-
         data class SeedBottom(val x: Int, val y: Int)
 
         var seedBottom: SeedBottom? = null
@@ -1069,11 +1293,16 @@ object RimDetectorBlock3250 {
                     edgesU8 = edgesU8,
                     dirU8 = dirU8,
                     maskU8 = maskU8,
+                    hScoreU8 = hScoreU8,
                     w = w,
-                    x = x,
+                    a = xa,
+                    b = xb,
                     y0 = yWin0,
                     y1 = yWin1,
-                    expectedY = prevY
+                    expectedY = prevY,
+                    profile3250 = profile3250,
+                    minOuterGapPx = minOuterGapPx,
+                    maxOuterGapPx = maxOuterGapPx
                 )
 
                 if (bestY < 0 && expectedBottomY != null) {
@@ -1083,15 +1312,19 @@ object RimDetectorBlock3250 {
                         edgesU8 = edgesU8,
                         dirU8 = dirU8,
                         maskU8 = maskU8,
+                        hScoreU8 = hScoreU8,
                         w = w,
-                        x = x,
+                        a = xa,
+                        b = xb,
                         y0 = ySoft0,
                         y1 = ySoft1,
-                        expectedY = expectedBottomY
+                        expectedY = expectedBottomY,
+                        profile3250 = profile3250,
+                        minOuterGapPx = minOuterGapPx,
+                        maxOuterGapPx = maxOuterGapPx
                     )
                 }
 
-                // fallback extra: ampliar ventana alrededor de prevY antes de declarar miss
                 if (bestY < 0) {
                     val yWide0 = (prevY - winPad * 2).coerceIn(yLo, yHi)
                     val yWide1 = (prevY + winPad * 2).coerceIn(yLo, yHi)
@@ -1099,11 +1332,16 @@ object RimDetectorBlock3250 {
                         edgesU8 = edgesU8,
                         dirU8 = dirU8,
                         maskU8 = maskU8,
+                        hScoreU8 = hScoreU8,
                         w = w,
-                        x = x,
+                        a = xa,
+                        b = xb,
                         y0 = yWide0,
                         y1 = yWide1,
-                        expectedY = prevY
+                        expectedY = prevY,
+                        profile3250 = profile3250,
+                        minOuterGapPx = minOuterGapPx,
+                        maxOuterGapPx = maxOuterGapPx
                     )
                 }
 
@@ -1168,121 +1406,33 @@ object RimDetectorBlock3250 {
 
         if (coverage < minCoverage) return null
 
+// 🔥 NUEVO
         val ys = poly.map { it.second }.sorted()
         val yMed = ys[ys.size / 2]
 
+        val yMax = poly.maxOf { it.second }
+
+        val tolY = 3
+        val nearBottom = poly
+            .sortedBy { it.first }
+            .filter { it.second >= yMax - tolY }
+
+        val yBottomCoherent = if (nearBottom.isNotEmpty()) {
+            nearBottom.map { it.second }.average().toFloat().toInt()
+        } else {
+            yMax
+        }
+
         return ArcPick(
             yMed = yMed,
+            yMax = yMax,
+            yBottomCoherent = yBottomCoherent,
             poly = poly,
             coverage = coverage,
             continuity = continuity
         )
     }
-
-    private fun findBestBottomEdgeInWindow3250(
-        edgesU8: ByteArray,
-        dirU8: ByteArray?,
-        maskU8: ByteArray?,
-        w: Int,
-        x: Int,
-        y0: Int,
-        y1: Int,
-        expectedY: Int
-    ): Int {
-        if (w <= 0) return -1
-        val h = edgesU8.size / w
-        if (h <= 0) return -1
-        if (x !in 0 until w) return -1
-
-        val lo = min(y0, y1).coerceIn(0, h - 1)
-        val hi = max(y0, y1).coerceIn(0, h - 1)
-
-        var bestY = -1
-        var bestScore = Int.MIN_VALUE
-
-        for (y in lo..hi) {
-            val idx = y * w + x
-            val e = edgesU8[idx].toInt() and 0xFF
-            if (e == 0) continue
-            if (isMasked(maskU8, idx)) continue
-
-            val d = if (dirU8 == null) 255 else (dirU8[idx].toInt() and 0xFF)
-
-            val dirScore = when {
-                dirU8 == null -> 100
-                isHorzEdgeDir(d) -> 100
-                else -> 45
-            }
-
-            val support = horizontalSupportAt3250(
-                edgesU8 = edgesU8,
-                dirU8 = dirU8,
-                maskU8 = maskU8,
-                w = w,
-                h = h,
-                x = x,
-                y = y,
-                halfX = 2,
-                halfY = 1
-            )
-            if (support <= 0) continue
-
-            val score =
-                support * 100 +
-                        dirScore -
-                        abs(y - expectedY) * 6 +
-                        (y - lo) * 2
-
-            if (score > bestScore) {
-                bestScore = score
-                bestY = y
-            }
-        }
-
-        return bestY
-    }
-
-    private fun horizontalSupportAt3250(
-        edgesU8: ByteArray,
-        dirU8: ByteArray?,
-        maskU8: ByteArray?,
-        w: Int,
-        h: Int,
-        x: Int,
-        y: Int,
-        halfX: Int = 2,
-        halfY: Int = 1
-    ): Int {
-        if (x !in 0 until w || y !in 0 until h) return 0
-
-        val x0 = (x - halfX).coerceIn(0, w - 1)
-        val x1 = (x + halfX).coerceIn(0, w - 1)
-        val y0 = (y - halfY).coerceIn(0, h - 1)
-        val y1 = (y + halfY).coerceIn(0, h - 1)
-
-        var s = 0
-        for (yy in y0..y1) {
-            val base = yy * w
-            for (xx in x0..x1) {
-                val idx = base + xx
-                if (isMasked(maskU8, idx)) continue
-                if ((edgesU8[idx].toInt() and 0xFF) == 0) continue
-
-                val d = if (dirU8 == null) 255 else (dirU8[idx].toInt() and 0xFF)
-
-                // soporte base por presencia de edge
-                s += if (yy == y) 2 else 1
-
-                // bonus por orientación horizontal
-                if (dirU8 == null || isHorzEdgeDir(d)) {
-                    s += if (yy == y) 2 else 1
-                }
-            }
-        }
-        return s
-    }
-
-    private fun fillSmallBottomGaps3250(
+        private fun fillSmallBottomGaps3250(
         poly: List<Pair<Int, Int>>,
         stepX: Int,
         maxGapCols: Int,
@@ -1368,7 +1518,7 @@ object RimDetectorBlock3250 {
         return out
     }
 
-    private fun buildScales(minS: Float, maxS: Float, step: Float): FloatArray {
+    private fun buildScales3250(minS: Float, maxS: Float, step: Float): FloatArray {
         if (!minS.isFinite() || !maxS.isFinite() || !step.isFinite()) return floatArrayOf()
         if (step <= 0f) return floatArrayOf()
         val out = ArrayList<Float>(32)
@@ -1380,8 +1530,8 @@ object RimDetectorBlock3250 {
         return out.toFloatArray()
     }
 
-    private fun clampInt(v: Int, lo: Int, hi: Int): Int = max(lo, min(hi, v))
-    private fun clampInRange(v: Int, a: Int, b: Int): Int = v.coerceIn(min(a, b), max(a, b))
+    private fun clampInt3250(v: Int, lo: Int, hi: Int): Int = max(lo, min(hi, v))
+    private fun clampInRange3250(v: Int, a: Int, b: Int): Int = v.coerceIn(min(a, b), max(a, b))
 
     /**
      * Busca inner L/R en una banda vertical alrededor de yRef (la referencia oficial),
@@ -1391,99 +1541,6 @@ object RimDetectorBlock3250 {
      * - LR exige evidencia vertical (dirU8)
      * - la máscara veta puntos/soportes, pero NO mueve la referencia
      */
-    private fun findInnerWallsAtY3250(
-        edgesU8: ByteArray,
-        dirU8: ByteArray? = null,
-        maskU8: ByteArray?,
-        w: Int,
-        h: Int,
-        seedX: Int,
-        yRef: Int,
-        bandHalf: Int,
-        minDist: Int,
-        maxDist: Int
-    ): Pair<Int, Int>? {
-        val ys = ArrayList<Int>(2 * bandHalf + 1)
-        for (dy in -bandHalf..bandHalf) {
-            ys.add((yRef + dy).coerceIn(0, h - 1))
-        }
-
-        val leftHits = ArrayList<Int>()
-        val rightHits = ArrayList<Int>()
-
-        // No arrancar lejos, porque si no te salteás el inner real.
-        val innerMinStep = minDist.coerceAtLeast(1)
-
-        fun scanInner(dx: Int, y: Int): Int? {
-            val xStart = seedX.coerceIn(0, w - 1)
-
-            for (step in innerMinStep..maxDist) {
-                val x = xStart + dx * step
-                if (x !in 0 until w) break
-
-                val idx = y * w + x
-                if (isMaskedPx3250(maskU8, idx)) continue
-                if ((edgesU8[idx].toInt() and 0xFF) == 0) continue
-
-                val support = verticalSupportAt3250(
-                    edgesU8 = edgesU8,
-                    dirU8 = dirU8,
-                    maskU8 = maskU8,
-                    w = w,
-                    h = h,
-                    x = x,
-                    y = y,
-                    halfY = 2
-                )
-                if (support < 2) continue
-
-                val d = if (dirU8 == null) 255 else (dirU8[idx].toInt() and 0xFF)
-                val dirGood = isVertEdgeDir(d)
-                if (!dirGood) continue
-
-                return x
-            }
-
-            return null
-        }
-        for (y in ys) {
-            scanInner(dx = -1, y = y)?.let { leftHits.add(it) }
-            scanInner(dx = +1, y = y)?.let { rightHits.add(it) }
-        }
-        if (leftHits.isEmpty() || rightHits.isEmpty()) return null
-
-        val left = medianInt3250(leftHits)
-        val right = medianInt3250(rightHits)
-
-        if (left >= right) return null
-        if (abs(right - left) < 40) return null
-
-        return left to right
-    }
-
-    private fun verticalSupportAt3250(
-        edgesU8: ByteArray,
-        dirU8: ByteArray?,
-        maskU8: ByteArray?,
-        w: Int,
-        h: Int,
-        x: Int,
-        y: Int,
-        halfY: Int = 2
-    ): Int {
-        if (x !in 0 until w || y !in 0 until h) return 0
-        var s = 0
-        val y0 = (y - halfY).coerceIn(0, h - 1)
-        val y1 = (y + halfY).coerceIn(0, h - 1)
-        for (yy in y0..y1) {
-            val idx = yy * w + x
-            if (isMaskedPx3250(maskU8, idx)) continue
-            if ((edgesU8[idx].toInt() and 0xFF) == 0) continue
-            val d = if (dirU8 == null) 255 else (dirU8[idx].toInt() and 0xFF)
-            if (isVertEdgeDir(d)) s++
-        }
-        return s
-    }
     private fun buildSideArcCandidates3250(
         edgesU8: ByteArray,
         dirU8: ByteArray? = null,
@@ -1901,81 +1958,6 @@ private fun traceInnerHalf3250(
 
     return out
 }
-    private fun searchNearestInnerAroundPrevX3250(
-        edgesU8: ByteArray,
-        dirU8: ByteArray? = null,
-        maskU8: ByteArray?,
-        w: Int,
-        h: Int,
-        y: Int,
-        prevX: Int,
-        centerInsideSeedX: Int,
-        sideSign: Int, // left=-1, right=+1
-        searchRadiusPx: Int
-    ): Int? {
-
-        data class Cand(val x: Int, val score: Int)
-
-        fun onCorrectSide(x: Int): Boolean {
-            return if (sideSign < 0) x < centerInsideSeedX else x > centerInsideSeedX
-        }
-
-        fun buildCandidate(x: Int, strict: Boolean): Cand? {
-            if (x !in 0 until w) return null
-            if (!onCorrectSide(x)) return null
-
-            val idx = y * w + x
-            if (isMaskedPx3250(maskU8, idx)) return null
-            if ((edgesU8[idx].toInt() and 0xFF) == 0) return null
-
-            val support = verticalSupportAt3250(
-                edgesU8 = edgesU8,
-                dirU8 = dirU8,
-                maskU8 = maskU8,
-                w = w,
-                h = h,
-                x = x,
-                y = y,
-                halfY = if (strict) 2 else 1
-            )
-            if (support < if (strict) 2 else 1) return null
-
-            val dirGood = if (dirU8 == null) true else {
-                val d = dirU8[idx].toInt() and 0xFF
-                isVertEdgeDir(d)
-            }
-            if (strict && !dirGood) return null
-
-            val dist = abs(x - prevX)
-            val score = (if (dirGood) 1000 else 0) + support * 100 - dist * 10
-            return Cand(x = x, score = score)
-        }
-
-        fun search(strict: Boolean): Int? {
-            var best: Cand? = null
-
-            for (d in 0..searchRadiusPx) {
-                if (d == 0) {
-                    val c = buildCandidate(prevX, strict)
-                    if (c != null && (best == null || c.score > best!!.score)) best = c
-                } else {
-                    val x1 = prevX - d
-                    val x2 = prevX + d
-
-                    val c1 = buildCandidate(x1, strict)
-                    if (c1 != null && (best == null || c1.score > best!!.score)) best = c1
-
-                    val c2 = buildCandidate(x2, strict)
-                    if (c2 != null && (best == null || c2.score > best!!.score)) best = c2
-                }
-            }
-
-            return best?.x
-        }
-
-        return search(strict = true)
-    }
-
     private fun traceOuterFromInnerGuide3250(
         edgesU8: ByteArray,
         dirU8: ByteArray? = null,
@@ -2028,78 +2010,6 @@ private fun traceInnerHalf3250(
         }
 
         return raw.sortedBy { it.y }
-    }
-    private fun searchOuterFromInner3250(
-        edgesU8: ByteArray,
-        dirU8: ByteArray?,
-        maskU8: ByteArray?,
-        w: Int,
-        h: Int,
-        y: Int,
-        innerX: Int,
-        outwardSign: Int, // left=-1, right=+1
-        prevGapPx: Int?,
-        minOuterGapPx: Int,
-        maxOuterGapPx: Int,
-        profile3250: RimProfile3250,
-        minSupport: Int = 2
-    ): Int? {
-        if (profile3250 == RimProfile3250.PERFORADO) return null
-
-        val gapTol = when (profile3250) {
-            RimProfile3250.FULL_RIM -> max(3, ((prevGapPx ?: minOuterGapPx) * 0.45f).toInt())
-            RimProfile3250.RANURADO -> max(4, ((prevGapPx ?: minOuterGapPx) * 0.85f).toInt())
-            RimProfile3250.PERFORADO -> return null
-        }
-
-        fun isValidGap(gap: Int): Boolean {
-            if (gap !in minOuterGapPx..maxOuterGapPx) return false
-
-            val x = innerX + outwardSign * gap
-            if (x !in 0 until w) return false
-
-            val idx = y * w + x
-            if (isMaskedPx3250(maskU8, idx)) return false
-            if ((edgesU8[idx].toInt() and 0xFF) == 0) return false
-
-            if (dirU8 != null) {
-                val d = dirU8[idx].toInt() and 0xFF
-                if (!isVertEdgeDir(d)) return false
-            }
-
-            val support = verticalSupportAt3250(
-                edgesU8 = edgesU8,
-                dirU8 = dirU8,
-                maskU8 = maskU8,
-                w = w,
-                h = h,
-                x = x,
-                y = y,
-                halfY = 2
-            )
-            return support >= minSupport
-        }
-
-        // 1) continuidad de gap si ya veníamos siguiendo uno
-        if (prevGapPx != null && prevGapPx > 0) {
-            val g0 = max(minOuterGapPx, prevGapPx - gapTol)
-            val g1 = min(maxOuterGapPx, prevGapPx + gapTol)
-
-            for (gap in g0..g1) {
-                if (isValidGap(gap)) {
-                    return innerX + outwardSign * gap
-                }
-            }
-        }
-
-        // 2) sino, primer edge válido desde inner hacia afuera
-        for (gap in minOuterGapPx..maxOuterGapPx) {
-            if (isValidGap(gap)) {
-                return innerX + outwardSign * gap
-            }
-        }
-
-        return null
     }
 
     private fun fillSmallSideGaps3250(
@@ -2228,6 +2138,7 @@ private fun traceInnerHalf3250(
 
     private fun buildOfficialInnerArc3250(
         bottomLocal: List<PointF>,
+        topLocal: List<PointF>,
         nasalLocal: List<PointF>,
         templeLocal: List<PointF>,
         maxJoinDistPx: Float = 14f,
@@ -2235,27 +2146,44 @@ private fun traceInnerHalf3250(
         minRunPts: Int = 6
     ): List<PointF> {
         if (bottomLocal.size < 3) return emptyList()
+        if (topLocal.size < 3) return emptyList()
+        if (nasalLocal.size < minRunPts) return emptyList()
+        if (templeLocal.size < minRunPts) return emptyList()
 
         val bottom = bottomLocal.sortedBy { it.x }
+        val top = topLocal.sortedBy { it.x }
+
         val leftBottom = bottom.first()
         val rightBottom = bottom.last()
+        val leftTop = top.first()
+        val rightTop = top.last()
 
         val nasalBottomRef =
-            if (nasalLocal.isNotEmpty() &&
-                dist3250(nasalLocal.maxBy { it.y }, leftBottom) <= dist3250(nasalLocal.maxBy { it.y }, rightBottom)
-            ) {
+            if (dist3250(nasalLocal.maxBy { it.y }, leftBottom) <= dist3250(nasalLocal.maxBy { it.y }, rightBottom)) {
                 leftBottom
             } else {
                 rightBottom
             }
 
         val templeBottomRef =
-            if (templeLocal.isNotEmpty() &&
-                dist3250(templeLocal.maxBy { it.y }, leftBottom) <= dist3250(templeLocal.maxBy { it.y }, rightBottom)
-            ) {
+            if (dist3250(templeLocal.maxBy { it.y }, leftBottom) <= dist3250(templeLocal.maxBy { it.y }, rightBottom)) {
                 leftBottom
             } else {
                 rightBottom
+            }
+
+        val nasalTopRef =
+            if (dist3250(nasalLocal.minBy { it.y }, leftTop) <= dist3250(nasalLocal.minBy { it.y }, rightTop)) {
+                leftTop
+            } else {
+                rightTop
+            }
+
+        val templeTopRef =
+            if (dist3250(templeLocal.minBy { it.y }, leftTop) <= dist3250(templeLocal.minBy { it.y }, rightTop)) {
+                leftTop
+            } else {
+                rightTop
             }
 
         val nasalRun = takeContiguousRunFromBottom3250(
@@ -2276,39 +2204,75 @@ private fun traceInnerHalf3250(
 
         if (nasalRun.isEmpty() || templeRun.isEmpty()) return emptyList()
 
+        val nasalTopPt = nasalRun.first()
+        val templeTopPt = templeRun.first()
         val nasalBottomPt = nasalRun.last()
         val templeBottomPt = templeRun.last()
 
-        val i0 = nearestIdxOnPolyline3250(bottom, nasalBottomPt)
-        val i1 = nearestIdxOnPolyline3250(bottom, templeBottomPt)
+        if (
+            dist3250(nasalTopPt, nasalTopRef) > maxJoinDistPx ||
+            dist3250(templeTopPt, templeTopRef) > maxJoinDistPx
+        ) {
+            return emptyList()
+        }
 
-        val bottomSegment =
-            if (i0 <= i1) {
-                bottom.subList(i0, i1 + 1)
+        val iTop0 = nearestIdxOnPolyline3250(top, nasalTopPt)
+        val iTop1 = nearestIdxOnPolyline3250(top, templeTopPt)
+
+        val topSegment =
+            if (iTop0 <= iTop1) {
+                top.subList(iTop0, iTop1 + 1)
             } else {
-                bottom.subList(i1, i0 + 1).reversed()
+                top.subList(iTop1, iTop0 + 1).reversed()
             }
 
-        val out = ArrayList<PointF>(nasalRun.size + bottomSegment.size + templeRun.size)
+        val iBot0 = nearestIdxOnPolyline3250(bottom, nasalBottomPt)
+        val iBot1 = nearestIdxOnPolyline3250(bottom, templeBottomPt)
 
-        out.addAll(nasalRun)                        // top -> bottom
-        out.addAll(bottomSegment.drop(1))          // nasal -> temple
-        out.addAll(templeRun.asReversed().drop(1)) // bottom -> top
+        val bottomSegment =
+            if (iBot0 <= iBot1) {
+                bottom.subList(iBot0, iBot1 + 1)
+            } else {
+                bottom.subList(iBot1, iBot0 + 1).reversed()
+            }
+
+        val out = ArrayList<PointF>(
+            nasalRun.size + topSegment.size + templeRun.size + bottomSegment.size
+        )
+
+        out.addAll(nasalRun)
+        out.addAll(topSegment.drop(1))
+        out.addAll(templeRun.asReversed().drop(1))
+        out.addAll(bottomSegment.drop(1))
 
         return out
     }
+    private fun keepPolylineNearXRef3250(
+        pts: List<PointF>,
+        xRef: Float,
+        sideSign: Int,
+        tolTowardCenterPx: Float = 8f,
+        tolOutwardPx: Float = 26f,
+        minPts: Int = 6
+    ): List<PointF> {
+        if (pts.isEmpty()) return emptyList()
 
+        val out = pts.filter { p ->
+            val dx = p.x - xRef
+            if (sideSign < 0) {
+                dx <= tolTowardCenterPx && dx >= -tolOutwardPx
+            } else {
+                dx >= -tolTowardCenterPx && dx <= tolOutwardPx
+            }
+        }
+
+        return if (out.size >= minPts) out else emptyList()
+    }
     private fun norm013250(v: Float, lo: Float, hi: Float): Float {
         if (hi <= lo) return 0f
         return ((v - lo) / (hi - lo)).coerceIn(0f, 1f)
     }
 
-    private fun medianInt3250(v: List<Int>): Int {
-    if (v.isEmpty()) return 0
-    val s = v.sorted()
-    val m = s.size / 2
-    return if (s.size % 2 == 1) s[m] else ((s[m - 1] + s[m]) / 2)
-}
     private fun keepBestBottomRunByXStrict3250(
         poly: List<Pair<Int, Int>>,
         maxJumpX: Int,
@@ -2392,8 +2356,717 @@ private fun traceInnerHalf3250(
         val best = filtered.maxByOrNull { it.score() } ?: return emptyList()
         return best.pts
     }
+    fun detectRimAutoProfile3250(
+        edgesU8: ByteArray,
+        dirU8: ByteArray? = null,
+        maskU8: ByteArray? = null,
+        w: Int,
+        h: Int,
+        hScoreU8: ByteArray? = null,
+        vScoreU8: ByteArray? = null,
+        roiGlobal: RectF,
+        midlineXpx: Float,
+        browBottomYpx: Float?,
+        filHboxMm: Double,
+        filVboxMm: Double?,
+        filOverInnerMmPerSide3250: Double,
+        bridgeRowYpxGlobal: Float?,
+        pupilGlobal: PointF?,
+        debugTag: String,
+        filPtsMm3250: List<PointF>? = null,
+        pxPerMmGuessFace: Float? = null
 
-    private fun f1(x: Float): String = String.format(Locale.US, "%.1f", x)
-    private fun f2(x: Float): String = String.format(Locale.US, "%.2f", x)
-    private fun f3(x: Float): String = String.format(Locale.US, "%.3f", x)
+    ): RimDetectProfilePick3250? {
+
+        val profiles = listOf(
+            RimProfile3250.FULL_RIM,
+            RimProfile3250.RANURADO,
+            RimProfile3250.PERFORADO
+        )
+
+        var best: RimDetectProfilePick3250? = null
+
+        for (profile in profiles) {
+            val pack = detectRim(
+                edgesU8 = edgesU8,
+                dirU8 = dirU8,
+                maskU8 = maskU8,
+                w = w,
+                h = h,
+                hScoreU8 = hScoreU8,
+                vScoreU8 = vScoreU8,
+                roiGlobal = roiGlobal,
+                midlineXpx = midlineXpx,
+                browBottomYpx = browBottomYpx,
+                filHboxMm = filHboxMm,
+                filVboxMm = filVboxMm,
+                filOverInnerMmPerSide3250 = filOverInnerMmPerSide3250,
+                profile3250 = profile,
+                bridgeRowYpxGlobal = bridgeRowYpxGlobal,
+                pupilGlobal = pupilGlobal,
+                filPtsMm3250 = filPtsMm3250,
+                debugTag = "$debugTag/$profile",
+                pxPerMmGuessFace = pxPerMmGuessFace
+            ) ?: continue
+
+            val score = pack.result.confidence
+
+            if (best == null || score > best.score3250) {
+                best = RimDetectProfilePick3250(
+                    profile3250 = profile,
+                    pack3250 = pack,
+                    score3250 = score
+                )
+            }
+        }
+
+        return best
+    }
+
+    private fun pickTopInsideOut3250(
+        edgesU8: ByteArray,
+        dirU8: ByteArray?,
+        maskU8: ByteArray?,
+        hScoreU8: ByteArray? = null,
+        w: Int,
+        h: Int,
+        leftX: Int,
+        rightX: Int,
+        ySeed: Int,
+        yMin: Int,
+        stepX: Int,
+        minHits: Int,
+        minCoverage: Float,
+        contJumpPx: Int,
+        expectedTopY: Int?,
+        expectedTolPx: Int
+    ): TopPick3250? {
+
+        val xa = (leftX + 8).coerceIn(0, w - 1)
+        val xb = (rightX - 8).coerceIn(0, w - 1)
+        if (xb - xa < 50) return null
+
+        val yLo = yMin.coerceIn(0, h - 1)
+        val yHi = ySeed.coerceIn(0, h - 1)
+        if (yHi - yLo < 10) return null
+
+        val xMid = ((leftX + rightX) / 2).coerceIn(xa, xb)
+        val ySeed0 = ySeed.coerceIn(yLo, yHi)
+        val tol = expectedTolPx.coerceAtLeast(12)
+
+        fun findSeedAtX(x: Int): Int {
+            val x0 = (x - stepX * 2).coerceIn(xa, xb)
+            val x1 = (x + stepX * 2).coerceIn(xa, xb)
+
+            val y0Soft = expectedTopY?.let { (it - tol).coerceIn(yLo, yHi) } ?: yLo
+            val y1Soft = expectedTopY?.let { (it + tol).coerceIn(yLo, yHi) } ?: yHi
+
+            var y = findBestTopEdgeInWindow3250(
+                edgesU8 = edgesU8,
+                dirU8 = dirU8,
+                maskU8 = maskU8,
+                hScoreU8 = hScoreU8,
+                w = w,
+                a = x0,
+                b = x1,
+                y0 = y0Soft,
+                y1 = min(y1Soft, ySeed0),
+                expectedY = expectedTopY ?: y0Soft
+            )
+
+            if (y < 0) {
+                y = findBestTopEdgeInWindow3250(
+                    edgesU8 = edgesU8,
+                    dirU8 = dirU8,
+                    maskU8 = maskU8,
+                    hScoreU8 = hScoreU8,
+                    w = w,
+                    a = x0,
+                    b = x1,
+                    y0 = yLo,
+                    y1 = ySeed0,
+                    expectedY = expectedTopY ?: yLo
+                )
+            }
+
+            if (y < 0) {
+                val yCenter = expectedTopY ?: ySeed0
+                val y0Wide = (yCenter - contJumpPx * 5).coerceIn(yLo, yHi)
+                val y1Wide = (yCenter + contJumpPx * 3).coerceIn(yLo, yHi)
+
+                y = findBestTopEdgeInWindow3250(
+                    edgesU8 = edgesU8,
+                    dirU8 = dirU8,
+                    maskU8 = maskU8,
+                    hScoreU8 = hScoreU8,
+                    w = w,
+                    a = x0,
+                    b = x1,
+                    y0 = y0Wide,
+                    y1 = y1Wide,
+                    expectedY = expectedTopY ?: yCenter
+                )
+            }
+
+            return y
+        }
+        data class SeedTop(val x: Int, val y: Int)
+
+        var seedTop: SeedTop? = null
+
+        run {
+            val y0 = findSeedAtX(xMid)
+            if (y0 >= 0) {
+                seedTop = SeedTop(xMid, y0)
+                return@run
+            }
+
+            var d = stepX
+            while (xMid - d >= xa || xMid + d <= xb) {
+                val xl = xMid - d
+                if (xl in xa..xb) {
+                    val yl = findSeedAtX(xl)
+                    if (yl >= 0) {
+                        seedTop = SeedTop(xl, yl)
+                        return@run
+                    }
+                }
+
+                val xr = xMid + d
+                if (xr in xa..xb) {
+                    val yr = findSeedAtX(xr)
+                    if (yr >= 0) {
+                        seedTop = SeedTop(xr, yr)
+                        return@run
+                    }
+                }
+
+                d += stepX
+            }
+        }
+
+        val seedTopX = seedTop?.x ?: return null
+        val seedTopY = seedTop.y
+
+        fun traceHalf(startX: Int, stepSign: Int): List<Pair<Int, Int>> {
+            val out = ArrayList<Pair<Int, Int>>()
+            var prevY = seedTopY
+            var x = startX
+            var missCount = 0
+
+            while (x in xa..xb) {
+                val winPad = (contJumpPx + missCount * 2).coerceAtMost(contJumpPx * 3)
+                val yWin0 = (prevY - winPad).coerceIn(yLo, yHi)
+                val yWin1 = (prevY + winPad).coerceIn(yLo, yHi)
+
+                var bestY = findBestTopEdgeInWindow3250(
+                    edgesU8 = edgesU8,
+                    dirU8 = dirU8,
+                    maskU8 = maskU8,
+                    hScoreU8 = hScoreU8,
+                    w = w,
+                    a = xa,
+                    b = xb,
+                    y0 = yWin0,
+                    y1 = yWin1,
+                    expectedY = prevY
+                )
+
+                if (bestY < 0 && expectedTopY != null) {
+                    val ySoft0 = (expectedTopY - tol).coerceIn(yLo, yHi)
+                    val ySoft1 = (expectedTopY + tol).coerceIn(yLo, yHi)
+
+                    bestY = findBestTopEdgeInWindow3250(
+                        edgesU8 = edgesU8,
+                        dirU8 = dirU8,
+                        maskU8 = maskU8,
+                        hScoreU8 = hScoreU8,
+                        w = w,
+                        a = xa,
+                        b = xb,
+                        y0 = ySoft0,
+                        y1 = ySoft1,
+                        expectedY = expectedTopY
+                    )
+                }
+
+                if (bestY < 0) {
+                    val yWide0 = (prevY - winPad * 2).coerceIn(yLo, yHi)
+                    val yWide1 = (prevY + winPad * 2).coerceIn(yLo, yHi)
+
+                    bestY = findBestTopEdgeInWindow3250(
+                        edgesU8 = edgesU8,
+                        dirU8 = dirU8,
+                        maskU8 = maskU8,
+                        hScoreU8 = hScoreU8,
+                        w = w,
+                        a = xa,
+                        b = xb,
+                        y0 = yWide0,
+                        y1 = yWide1,
+                        expectedY = prevY
+                    )
+                }
+
+                if (bestY >= 0) {
+                    out.add(x to bestY)
+                    prevY = bestY
+                    missCount = 0
+                } else {
+                    out.add(x to -1)
+                    missCount++
+                }
+
+                x += stepSign * stepX
+            }
+
+            return out
+        }
+
+        val leftHalf = traceHalf(seedTopX, -1).drop(1)
+        val rightHalf = traceHalf(seedTopX, +1)
+
+        val polyRaw = ArrayList<Pair<Int, Int>>(leftHalf.size + rightHalf.size)
+        polyRaw.addAll(leftHalf.asReversed())
+        polyRaw.addAll(rightHalf)
+
+        val polyFilled = fillSmallBottomGaps3250(
+            poly = polyRaw,
+            stepX = stepX,
+            maxGapCols = 2,
+            maxInterpJumpPx = contJumpPx * 2
+        )
+
+        val polySmooth = smoothBottomPolyline3250(polyFilled)
+
+        val poly = keepBestBottomRunByXStrict3250(
+            poly = polySmooth,
+            maxJumpX = stepX * 2,
+            maxJumpY = contJumpPx * 2,
+            minRunPoints = minHits,
+            maxTotalSecondaryDriftPx = 120
+        )
+
+        if (poly.size < minHits) return null
+
+        val xSpan = (poly.last().first - poly.first().first).coerceAtLeast(0)
+        val expectedSamples = (xSpan / stepX + 1).coerceAtLeast(1)
+        val coverage = poly.size.toFloat() / expectedSamples.toFloat()
+
+        var contSamples = 0
+        var contHits = 0
+        for (i in 1 until poly.size) {
+            contSamples++
+            if (abs(poly[i].second - poly[i - 1].second) <= contJumpPx * 2) {
+                contHits++
+            }
+        }
+
+        val continuity = if (contSamples > 0) {
+            contHits.toFloat() / contSamples.toFloat()
+        } else {
+            0f
+        }
+
+        if (coverage < minCoverage) return null
+
+        val ys = poly.map { it.second }.sorted()
+        val yMed = ys[ys.size / 2]
+
+        val yMin = poly.minOf { it.second }
+
+        val tolY = 3
+        val nearTop = poly
+            .sortedBy { it.first }
+            .filter { it.second <= yMin + tolY }
+
+        val yTopCoherent = if (nearTop.isNotEmpty()) {
+            nearTop.map { it.second }.average().toFloat().toInt()
+        } else {
+            yMin
+        }
+        val confCoverage =
+            norm013250(coverage, 0.25f, 0.80f)
+
+        val confContinuity =
+            norm013250(continuity, 0.35f, 0.90f)
+
+        val confExpected =
+            if (expectedTopY != null) {
+                val dy = abs(yTopCoherent - expectedTopY).toFloat()
+                (1f - (dy / expectedTolPx.toFloat().coerceAtLeast(1f))).coerceIn(0f, 1f)
+            } else {
+                0.5f
+            }
+
+        val confidence =
+            (
+                    0.35f * confCoverage +
+                            0.30f * confContinuity +
+                            0.35f * confExpected
+                    ).coerceIn(0f, 1f)
+
+        return TopPick3250(
+            yMed = yMed,
+            yMin = yMin,
+            yTopCoherent = yTopCoherent,
+            poly = poly,
+            coverage = coverage,
+            continuity = continuity,
+            confidence = confidence
+        )
+    }
+    private fun pairPolylineToGlobal3250(
+        pts: List<Pair<Int, Int>>,
+        roiLeft: Float,
+        roiTop: Float
+    ): List<PointF>? {
+        if (pts.isEmpty()) return null
+
+        return pts.map { (x, y) ->
+            PointF(
+                x.toFloat() + roiLeft,
+                y.toFloat() + roiTop
+            )
+        }
+    }
+    private fun buildNormalCandidate3250(
+        debugTag: String,
+        scale: Float,
+        ratioPenalty: Float,
+        probeYLocal: Int,
+        vboxInnerMmF: Float,
+        pxPerMmX: Float,
+        bottomPick: ArcPick,
+        topPick: TopPick3250?,
+        topSearchMinY: Int,
+        topExpectedY: Int?,
+        h: Int
+    ): ScaleCandidate3250? {
+
+        val bottomY = bottomPick.yMax
+
+        val yCap = (probeYLocal - TOP_SEARCH_PAD).coerceIn(0, h - 1)
+        val expHpx = if (vboxInnerMmF > 1e-3f) {
+            vboxInnerMmF * pxPerMmX
+        } else {
+            Float.NaN
+        }
+
+        val topEstimatedY = when {
+            topExpectedY != null -> {
+                topExpectedY.coerceIn(topSearchMinY, yCap)
+            }
+
+            expHpx.isFinite() && expHpx > 60f -> {
+                (bottomY - expHpx).roundToInt().coerceIn(topSearchMinY, yCap)
+            }
+
+            else -> {
+                topSearchMinY.coerceAtMost(yCap)
+            }
+        }
+
+        val topObservedY =
+            when {
+                topPick == null -> null
+                topPick.yTopCoherent > 0 -> topPick.yTopCoherent
+                topPick.yMed > 0 -> topPick.yMed
+                else -> null
+            }
+
+        val topConfidence =
+            if (topObservedY != null && topPick != null) {
+                topPick.confidence.coerceIn(0f, 1f)
+            } else {
+                0f
+            }
+
+        val topPoly =
+            if (topObservedY != null && topPick != null) {
+                topPick.poly
+            } else {
+                emptyList()
+            }
+
+        val topUsedY =
+            (topObservedY ?: topEstimatedY)
+                .coerceIn(topSearchMinY, yCap)
+
+        val innerH = (bottomY - topUsedY).coerceAtLeast(1)
+        val minH0 = max(70, (h * 0.18f).roundToInt())
+        val maxH0 = (h * 0.92f).roundToInt()
+
+        if (innerH !in minH0..maxH0) {
+            return null
+        }
+
+        val confCoverage =
+            norm013250(bottomPick.coverage, 0.55f, 0.95f)
+
+        val confContinuity =
+            norm013250(bottomPick.continuity, 0.65f, 0.98f)
+
+        val confSamples =
+            norm013250(bottomPick.poly.size.toFloat(), 28f, 60f)
+
+        val confTop =
+            norm013250(topConfidence, 0.20f, 0.80f)
+
+        var conf =
+            (
+                    0.40f * confCoverage +
+                            0.25f * confContinuity +
+                            0.10f * confSamples +
+                            0.25f * confTop
+                    ).coerceIn(0f, 1f)
+
+        conf *=
+            (0.75f + 0.25f * ratioPenalty).coerceIn(0.75f, 1.00f)
+
+        conf =
+            conf.coerceIn(0f, 1f)
+
+        if (DBG) {
+            Log.d(
+                TAG,
+                "RIMCONF[$debugTag] S=${f23250(scale)} " +
+                        "topObs=${topObservedY ?: -1} " +
+                        "topEst=$topEstimatedY " +
+                        "topUsed=$topUsedY " +
+                        "topConf=${f33250(topConfidence)} " +
+                        "topPts=${topPoly.size} " +
+                        "cov=${f33250(bottomPick.coverage)} " +
+                        "cont=${f33250(bottomPick.continuity)} " +
+                        "n=${bottomPick.poly.size} " +
+                        "ratioPen=${f33250(ratioPenalty)} " +
+                        "conf=${f33250(conf)}"
+            )
+
+        }
+
+        return ScaleCandidate3250(
+            conf = conf,
+            left = -1,
+            right = -1,
+            top = topUsedY,
+            bottom = bottomY,
+            refY = probeYLocal,
+            seedX = -1,
+            scale = scale,
+            bottomPoly = bottomPick.poly,
+            topPoly = topPoly,
+            topObservedY = topObservedY,
+            topConfidence = topConfidence,
+            isPartial = false
+        )
+    }
+
+    private fun buildPartialCandidate3250(
+        debugTag: String,
+        scale: Float,
+        ratioPenalty: Float,
+        probeYLocal: Int,
+        topPick: TopPick3250?,
+        bottomPick: ArcPick?,
+        profile3250: RimProfile3250,
+        expHpxGuess: Float,
+        expWpx: Float,
+        innerW: Int,
+        topSearchMinY: Int,
+        topExpectedY: Int?,
+        h: Int
+    ): ScaleCandidate3250?
+    {
+
+        val yCapPartial = (probeYLocal - TOP_SEARCH_PAD).coerceIn(0, h - 1)
+        val topEstimatedY = when {
+            topExpectedY != null -> {
+                topExpectedY.coerceIn(topSearchMinY, yCapPartial)
+            }
+
+            else -> {
+                topSearchMinY.coerceAtMost(yCapPartial)
+            }
+        }
+        val topObservedY =
+            when {
+                topPick == null -> null
+                topPick.yTopCoherent > 0 -> topPick.yTopCoherent
+                topPick.yMed > 0 -> topPick.yMed
+                else -> null
+            }
+
+        val topConfidence =
+            if (topObservedY != null && topPick != null) {
+                topPick.confidence.coerceIn(0f, 1f)
+            } else {
+                0f
+            }
+
+        val topPoly =
+            if (topObservedY != null && topPick != null) {
+                topPick.poly
+            } else {
+                emptyList()
+            }
+
+        val topUsedY =
+            (topObservedY ?: topEstimatedY)
+                .coerceIn(topSearchMinY, yCapPartial)
+
+        val minBottomGapPx = when (profile3250) {
+            RimProfile3250.FULL_RIM ->
+                max(10, (0.08f * expWpx).roundToInt())
+
+            RimProfile3250.RANURADO ->
+                max(8, (0.06f * expWpx).roundToInt())
+
+            RimProfile3250.PERFORADO ->
+                max(6, (0.05f * expWpx).roundToInt())
+        }
+
+        val bottomObservedY =
+            when {
+                bottomPick == null -> null
+                bottomPick.yBottomCoherent > 0 -> bottomPick.yBottomCoherent
+                bottomPick.yMed > 0 -> bottomPick.yMed
+                else -> null
+            }
+
+        val bottomEstimatedY =
+            if (expHpxGuess.isFinite() && expHpxGuess > 60f) {
+                (topUsedY + expHpxGuess.roundToInt())
+                    .coerceIn(topUsedY + minBottomGapPx, h - 1)
+            } else {
+                (probeYLocal + (0.70f * expWpx).roundToInt())
+                    .coerceIn(topUsedY + minBottomGapPx, h - 1)
+            }
+
+        val bottomUsedY =
+            (bottomObservedY ?: bottomEstimatedY)
+                .coerceIn(topUsedY + minBottomGapPx, h - 1)
+
+        if (bottomUsedY <= topUsedY) {
+            return null
+        }
+
+        fun clamp01(v: Float): Float = v.coerceIn(0f, 1f)
+
+        val confTop =
+            norm013250(topConfidence, 0.20f, 0.80f)
+
+        val confWidthRatio =
+            clamp01(((innerW.toFloat() / expWpx) - 0.70f) / 0.60f)
+
+        val confInnerW =
+            clamp01((innerW - 60f) / 180f)
+
+        val confBottom =
+            if (bottomObservedY != null) 1f else 0f
+
+        val partialConf =
+            (
+                    0.25f * ratioPenalty +
+                            0.20f * confWidthRatio +
+                            0.15f * confInnerW +
+                            0.15f * confTop +
+                            0.25f * confBottom
+                    ).coerceIn(0f, 0.90f)
+
+        if (DBG) {
+            Log.d(
+                TAG,
+                "RIMDBG[$debugTag] S=${f23250(scale)} PARTIAL_OK " +
+                        "topObs=${topObservedY ?: -1} " +
+                        "topEst=${topEstimatedY} " +
+                        "topUsed=${topUsedY} " +
+                        "botObs=${bottomObservedY} ?: -1} " +
+                        "botEst=${bottomEstimatedY} " +
+                        "botUsed=${bottomUsedY} " +
+                        "conf=${f33250(partialConf)}"
+            )
+        }
+        return ScaleCandidate3250(
+            conf = partialConf,
+            left = -1,
+            right = -1,
+            top = topUsedY,
+            bottom = bottomUsedY,
+            refY = probeYLocal,
+            seedX = -1,
+            scale = scale,
+            bottomPoly = bottomPick?.poly ?: emptyList(),
+            topPoly = topPoly,
+            topObservedY = topObservedY,
+            topConfidence = topConfidence,
+            isPartial = true
+        )
+    }
+    private fun buildVerticalGuidePoly3250(
+        x: Int,
+        yTop: Int,
+        yBottom: Int,
+        h: Int,
+        marginTop: Int = 6,
+        marginBottom: Int = 6,
+        step: Int = 4
+    ): List<Pair<Int, Int>> {
+        val y0 = (yTop + marginTop).coerceIn(0, h - 1)
+        val y1 = (yBottom - marginBottom).coerceIn(0, h - 1)
+        if (y1 <= y0) return emptyList()
+
+        val out = ArrayList<Pair<Int, Int>>()
+        var y = y0
+        while (y <= y1) {
+            out.add(x to y)
+            y += step
+        }
+        if (out.isEmpty() || out.last().second != y1) {
+            out.add(x to y1)
+        }
+        return out
+    }
+    private data class FilExpectedY3250(
+        val topY: Int,
+        val bottomY: Int
+    )
+
+    private fun expectedTopBottomFromFilAtSeed3250(
+        filPtsMm: List<PointF>?,
+        probeYLocal: Int,
+        pxPerMmX: Float
+    ): FilExpectedY3250? {
+        if (filPtsMm == null || filPtsMm.size < 601) return null
+        if (!pxPerMmX.isFinite() || pxPerMmX <= 0f) return null
+
+        var minX = Float.POSITIVE_INFINITY
+        var minY = Float.POSITIVE_INFINITY
+        var maxX = Float.NEGATIVE_INFINITY
+        var maxY = Float.NEGATIVE_INFINITY
+
+        for (p in filPtsMm) {
+            if (p.x < minX) minX = p.x
+            if (p.y < minY) minY = p.y
+            if (p.x > maxX) maxX = p.x
+            if (p.y > maxY) maxY = p.y
+        }
+
+        val cyMm = (minY + maxY) * 0.5f
+
+        val r201 = filPtsMm[200]
+        val r601 = filPtsMm[600]
+
+        val topY = (probeYLocal - (r201.y - cyMm) * pxPerMmX).roundToInt()
+        val bottomY = (probeYLocal - (r601.y - cyMm) * pxPerMmX).roundToInt()
+
+        return FilExpectedY3250(
+            topY = topY,
+            bottomY = bottomY
+        )
+    }
+    private fun f13250(x: Float): String = String.format(Locale.US, "%.1f", x)
+    private fun f23250(x: Float): String = String.format(Locale.US, "%.2f", x)
+    private fun f33250(x: Float): String = String.format(Locale.US, "%.3f", x)
 }
+

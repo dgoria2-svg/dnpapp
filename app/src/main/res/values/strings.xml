@@ -111,8 +111,9 @@ Imprima la guía A4 al 100 % (círculo 75 mm). Verifique que la medida guía (50
     <string name="dnp_overlay_missing_box">Falta el encuadre del ojo en el overlay.</string>
     <string name="dnp_measure_failed">Falló la medición.</string>
     <string name="dnp_stage_rim_detecting">Detectando aro…</string>
-    <string name="dnp_stage_arc_fit">Ajustando FIL…</string>
+    <string name="dnp_stage_arc_fit">Ajustando calce del anteojo…</string>
     <string name="dnp_stage_sampler">Refinando ajuste…</string>
+    <string name="dnp_stage_render">Renderizando resultado…</string>
     <string name="dnp_stage_debug">Generando debug…</string>
 
 
