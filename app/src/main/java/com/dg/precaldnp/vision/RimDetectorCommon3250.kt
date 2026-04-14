@@ -2,6 +2,7 @@ package com.dg.precaldnp.vision
 
 import android.graphics.PointF
 import java.util.Locale
+import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
 
@@ -69,6 +70,151 @@ internal fun pairPolylineToGlobal3250(
     }
 }
 
+internal data class RimSearchPolicy3250(
+    val requireOuter: Boolean,
+    val requireTop: Boolean,
+    val innerMandatory: Boolean,
+    val validateOuterAgainstInner: Boolean
+)
+
+internal fun buildRimSearchPolicy3250(
+    profile3250: RimProfile3250
+): RimSearchPolicy3250 =
+    when (profile3250) {
+        RimProfile3250.FULL_RIM -> RimSearchPolicy3250(
+            requireOuter = true,
+            requireTop = false,
+            innerMandatory = true,
+            validateOuterAgainstInner = true
+        )
+        RimProfile3250.RANURADO -> RimSearchPolicy3250(
+            requireOuter = false,
+            requireTop = true,
+            innerMandatory = true,
+            validateOuterAgainstInner = false
+        )
+        RimProfile3250.PERFORADO -> RimSearchPolicy3250(
+            requireOuter = false,
+            requireTop = false,
+            innerMandatory = true,
+            validateOuterAgainstInner = false
+        )
+    }
+internal fun applyProfileGate3250(
+    input: RimGateInput3250
+): RimGateResult3250 {
+    val policy3250 = buildRimSearchPolicy3250(input.profile3250)
+
+    if (policy3250.innerMandatory && !input.hasInnerLaterals) {
+        return RimGateResult3250(
+            accepted = false,
+            confidenceOut = 0f,
+            reason3250 = "missing_inner"
+        )
+    }
+
+    var conf = input.baseConfidence.coerceIn(0f, 1f)
+
+    conf *= input.ratioPenalty.coerceIn(0f, 1f)
+
+    val hasTopObs = input.topObservedY != null
+    val hObsPx = (input.bottomUsedY - input.topUsedY).toFloat()
+
+    val hErrRel =
+        if (hasTopObs && input.expHGuessPx > 1f && hObsPx > 1f) {
+            abs(hObsPx - input.expHGuessPx) / input.expHGuessPx
+        } else {
+            0f
+        }
+
+    val heightGate =
+        if (!hasTopObs) {
+            1f
+        } else {
+            when {
+                hErrRel <= 0.08f -> 1.00f
+                hErrRel <= 0.15f -> 0.75f
+                hErrRel <= 0.22f -> 0.45f
+                else -> 0.10f
+            }
+        }
+
+    conf *= heightGate
+
+    when (input.profile3250) {
+        RimProfile3250.FULL_RIM -> {
+            if (!input.hasOuterLaterals) {
+                return RimGateResult3250(
+                    accepted = false,
+                    confidenceOut = 0f,
+                    reason3250 = "missing_outer_full_rim"
+                )
+            }
+
+            if (input.isPartial) {
+                return RimGateResult3250(
+                    accepted = false,
+                    confidenceOut = 0f,
+                    reason3250 = "partial_not_allowed_full_rim"
+                )
+            }
+
+            if (hasTopObs && hErrRel > 0.18f) {
+                return RimGateResult3250(
+                    accepted = false,
+                    confidenceOut = 0f,
+                    reason3250 = "height_conflict_full_rim"
+                )
+            }
+        }
+
+        RimProfile3250.RANURADO -> {
+            if (!policy3250.requireTop) {
+                return RimGateResult3250(
+                    accepted = false,
+                    confidenceOut = 0f,
+                    reason3250 = "invalid_policy_ranurado"
+                )
+            }
+
+            if (!hasTopObs) {
+                return RimGateResult3250(
+                    accepted = false,
+                    confidenceOut = 0f,
+                    reason3250 = "missing_top_ranurado"
+                )
+            }
+
+            if (hErrRel > 0.20f) {
+                conf *= 0.35f
+            }
+        }
+
+        RimProfile3250.PERFORADO -> {
+            if (input.hasOuterLaterals) {
+                conf *= 0.80f
+            }
+
+            if (hasTopObs && hErrRel > 0.22f) {
+                conf *= 0.40f
+            }
+        }
+    }
+
+    if (conf < 0.35f) {
+        return RimGateResult3250(
+            accepted = false,
+            confidenceOut = conf.coerceIn(0f, 1f),
+            reason3250 = "confidence_below_gate"
+        )
+    }
+
+    return RimGateResult3250(
+        accepted = true,
+        confidenceOut = conf.coerceIn(0f, 1f),
+        reason3250 = "ok"
+    )
+}
 internal fun f13250(x: Float): String =
     String.format(Locale.US, "%.1f", x)
 

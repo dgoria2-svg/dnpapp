@@ -80,14 +80,13 @@ object RimDetectorBlock3250 {
         filPtsMm3250: List<PointF>? = null,
         debugTag: String,
         pxPerMmGuessFace: Float? = null
-    ): RimDetectPack3250?  {
+    ): RimDetectPack3250? {
 
         var stage = "ENTER"
         fun fail(code: String, msg: String): RimDetectPack3250? {
             Log.w(TAG, "RIM[$debugTag] FAIL@$stage code=$code :: $msg")
             return null
         }
-
         stage = "SANITY"
 
         val effectiveOverF = effectiveFilOverPerSide3250(
@@ -106,61 +105,97 @@ object RimDetectorBlock3250 {
             .takeIf { it.isFinite() && it > 1e-6f }
             ?: 0f
 
-        if (w <= 0 || h <= 0) return fail("WH", "w/h invalid $w x $h")
-        if (w < MIN_ROI_W || h < MIN_ROI_H) return fail("ROI_SMALL", "ROI too small ${w}x${h}")
-        if (edgesU8.size != w * h) return fail("EDGE_SIZE", "edgesU8.size=${edgesU8.size} != w*h=${w * h}")
-        if (dirU8 != null && dirU8.size != w * h) return fail("DIR_SIZE", "dirU8.size=${dirU8.size} != w*h=${w * h}")
-        if (maskU8 != null && maskU8.size != w * h) return fail("MASK_SIZE", "maskU8.size=${maskU8.size} != w*h=${w * h}")
-        if (!midlineXpx.isFinite()) return fail("MIDLINE", "midlineXpx invalid=$midlineXpx")
+        fun logSanityHeader3250() {
+            d(
+                "RIM[$debugTag] profile=$profile3250 " +
+                        "filH=${f13250(filHboxMm.toFloat())} " +
+                        "filV=${f13250((filVboxMm ?: Double.NaN).toFloat())} " +
+                        "overIn=${f23250(filOverInnerMmPerSide3250.toFloat())} " +
+                        "overEff=${f23250(effectiveOverF)} " +
+                        "hboxInner=${f23250(hboxInnerMmF)} " +
+                        "vboxInner=${f23250(vboxInnerMmF)}"
+            )
+        }
 
-        d(
-            "RIM[$debugTag] profile=$profile3250 " +
-                    "filH=${f13250(filHboxMm.toFloat())} filV=${f13250((filVboxMm ?: Double.NaN).toFloat())} " +
-                    "overIn=${f23250(filOverInnerMmPerSide3250.toFloat())} overEff=${f23250(effectiveOverF)} " +
-                    "hboxInner=${f23250(hboxInnerMmF)} vboxInner=${f23250(vboxInnerMmF)}"
-        )
+        if (w <= 0 || h <= 0) {
+            return fail("WH", "w/h invalid $w x $h")
+        }
+
+        if (w < MIN_ROI_W || h < MIN_ROI_H) {
+            return fail("ROI_SMALL", "ROI too small ${w}x${h}")
+        }
+
+        if (edgesU8.size != w * h) {
+            return fail("EDGE_SIZE", "edgesU8.size=${edgesU8.size} != w*h=${w * h}")
+        }
+
+        if (dirU8 != null && dirU8.size != w * h) {
+            return fail("DIR_SIZE", "dirU8.size=${dirU8.size} != w*h=${w * h}")
+        }
+
+        if (maskU8 != null && maskU8.size != w * h) {
+            return fail("MASK_SIZE", "maskU8.size=${maskU8.size} != w*h=${w * h}")
+        }
+
+        if (!midlineXpx.isFinite()) {
+            return fail("MIDLINE", "midlineXpx invalid=$midlineXpx")
+        }
+
+        logSanityHeader3250()
+
 
         stage = "EDGE_DENSITY"
+
         var nnz = 0
         for (i in edgesU8.indices) {
             if ((edgesU8[i].toInt() and 0xFF) != 0) nnz++
         }
+
         val dens = nnz.toFloat() / (w * h).toFloat().coerceAtLeast(1f)
         d("EDGE[$debugTag] nnz=$nnz/${w * h} dens=${"%.4f".format(Locale.US, dens)}")
-        if (nnz < 50) return fail("EDGE_SPARSE", "edgeMap too sparse (nnz<50)")
+
+        if (nnz < 50) {
+            return fail("EDGE_SPARSE", "edgeMap too sparse (nnz<50)")
+        }
 
         val roiLeftG = roiGlobal.left
         val roiTopG = roiGlobal.top
 
-        // ---- PROBE + ANTI-CEJA ----
         stage = "PROBE"
+
         val probeYLocalRaw = run {
-            val y0 = (bridgeRowYpxGlobal ?: pupilGlobal?.y ?: roiGlobal.centerY())
+            val y0 = bridgeRowYpxGlobal ?: pupilGlobal?.y ?: roiGlobal.centerY()
             (y0 - roiTopG).roundToInt()
         }.coerceIn(0, h - 1)
 
-        val browLocal = browBottomYpx?.let { (it - roiTopG).roundToInt().coerceIn(0, h - 1) }
-        val topMinAllowedY0 = if (browLocal == null) {
-            0
-        } else {
-            val pad = clampInt3250((h * 0.02f).roundToInt(), 6, 18)
-            (browLocal + pad).coerceIn(0, h - 1)
-        }
+        val browLocal = browBottomYpx
+            ?.let { (it - roiTopG).roundToInt() }
+            ?.coerceIn(0, h - 1)
+
+        val topMinAllowedY0 =
+            if (browLocal == null) {
+                0
+            } else {
+                val pad = clampInt3250((h * 0.02f).roundToInt(), 6, 18)
+                (browLocal + pad).coerceIn(0, h - 1)
+            }
 
         val topMinAllowedY =
-            min(topMinAllowedY0, (probeYLocalRaw - 14).coerceIn(0, h - 1)).coerceIn(0, h - 1)
+            min(
+                topMinAllowedY0,
+                (probeYLocalRaw - 14).coerceIn(0, h - 1)
+            ).coerceIn(0, h - 1)
 
         val probeYLocal = run {
             val lo = (topMinAllowedY + 2).coerceIn(0, h - 1)
             val hi = (h - 3).coerceIn(0, h - 1)
-            this.clampInRange3250(probeYLocalRaw, lo, hi)
+            clampInRange3250(probeYLocalRaw, lo, hi)
         }
 
         d(
             "RIM[$debugTag] probeRaw=$probeYLocalRaw probe=$probeYLocal " +
                     "topMin0=$topMinAllowedY0 topMin=$topMinAllowedY browLocal=${browLocal ?: -1}"
         )
-
         // ---- DBG: máscara (bbox + frac) ----
         if (DBG) {
             if (maskU8 != null && maskU8.size == w * h) {
@@ -182,12 +217,18 @@ object RimDetectorBlock3250 {
                 }
                 val frac = n.toFloat() / (w.toFloat() * h.toFloat()).coerceAtLeast(1f)
                 if (n > 0) {
-                    Log.d(TAG, "MASK[$debugTag] n=$n frac=${f33250(frac)} bbox=($minX,$minY)-($maxX,$maxY)")
+                    Log.d(
+                        TAG,
+                        "MASK[$debugTag] n=$n frac=${f33250(frac)} bbox=($minX,$minY)-($maxX,$maxY)"
+                    )
                 } else {
                     Log.d(TAG, "MASK[$debugTag] n=0 frac=${f33250(frac)} bbox=none")
                 }
             } else {
-                Log.d(TAG, "MASK[$debugTag] noneOrBadSize size=${maskU8?.size ?: -1} expected=${w * h}")
+                Log.d(
+                    TAG,
+                    "MASK[$debugTag] noneOrBadSize size=${maskU8?.size ?: -1} expected=${w * h}"
+                )
             }
         }
 
@@ -231,6 +272,9 @@ object RimDetectorBlock3250 {
         var bestScale = 1.0f
         var bestBottomPoly: List<Pair<Int, Int>> = emptyList()
         var bestTopPoly: List<Pair<Int, Int>> = emptyList()
+        var bestTopObservedY: Int? = null
+        var bestExpHGuessPx = Float.NaN
+        var bestRatioPenalty = 1f
 
         var bestPartialConf = -1f
         var bestPartialLeft = -1
@@ -244,7 +288,9 @@ object RimDetectorBlock3250 {
         var bestPartialBottomPoly: List<Pair<Int, Int>> = emptyList()
         var bestPartialNasalInnerPoly: List<Pair<Int, Int>> = emptyList()
         var bestPartialTempleInnerPoly: List<Pair<Int, Int>> = emptyList()
-
+        var bestPartialTopObservedY: Int? = null
+        var bestPartialExpHGuessPx = Float.NaN
+        var bestPartialRatioPenalty = 1f
 
         for (scale in scales) {
             val pxGuessThis = (pxGuessBase * scale).coerceIn(3.5f, 8.0f)
@@ -269,8 +315,16 @@ object RimDetectorBlock3250 {
                     TAG,
                     "RIMDBG[$debugTag] profile=$profile3250 S=${f23250(scale)} " +
                             "seed=($seedXLocal,$probeYLocal) yRef=$probeYLocal " +
-                            "seedExpX=${f13250(seedExpected)} seamX=${f13250(seamXLocal)} side=${f13250(sideSign)} " +
-                            "expW=${f13250(expWpx)} gap=${f13250(gapPx)} expHGuess=${f13250(expHpxGuess)} pxG=${
+                            "seedExpX=${f13250(seedExpected)} seamX=${f13250(seamXLocal)} side=${
+                                f13250(
+                                    sideSign
+                                )
+                            } " +
+                            "expW=${f13250(expWpx)} gap=${f13250(gapPx)} expHGuess=${
+                                f13250(
+                                    expHpxGuess
+                                )
+                            } pxG=${
                                 f23250(
                                     pxGuessThis
                                 )
@@ -283,14 +337,15 @@ object RimDetectorBlock3250 {
                 edgesU8 = edgesU8,
                 dirU8 = dirU8,
                 maskU8 = maskU8,
-                vScoreU8=vScoreU8,
+                vScoreU8 = vScoreU8,
                 w = w,
                 h = h,
                 seedX = seedXLocal,
                 yRef = probeYLocal,
                 bandHalf = BAND_HALF_PX,
                 minDist = distStart,
-                maxDist = maxDist
+                maxDist = maxDist,
+                profile3250 = profile3250
             )
 
             if (lr == null) {
@@ -336,7 +391,7 @@ object RimDetectorBlock3250 {
                             "ratioW=${f33250(ratioWdbg)} yRef=$probeYLocal " +
                             "dL=${abs(a - seedXLocal)} hitsL=$hitsL dR=${abs(b - seedXLocal)} hitsR=$hitsR"
                 )
-                }
+            }
 
             if (innerW < 60) {
                 if (DBG) Log.d(
@@ -362,16 +417,17 @@ object RimDetectorBlock3250 {
             } else {
                 1f
             }
-            val pxPerMmX = (usedInnerWpx / hboxInnerMmF).takeIf { it.isFinite() && it > 0f } ?: run {
-                if (DBG) {
-                    Log.d(
-                        TAG,
-                        "RIMDBG[$debugTag] S=${this.f23250(scale)} DROP pxPerMmX invalid " +
-                                "obsW=$obsInnerWpx expW=$expWpx hboxInner=$hboxInnerMmF"
-                    )
+            val pxPerMmX =
+                (usedInnerWpx / hboxInnerMmF).takeIf { it.isFinite() && it > 0f } ?: run {
+                    if (DBG) {
+                        Log.d(
+                            TAG,
+                            "RIMDBG[$debugTag] S=${this.f23250(scale)} DROP pxPerMmX invalid " +
+                                    "obsW=$obsInnerWpx expW=$expWpx hboxInner=$hboxInnerMmF"
+                        )
+                    }
+                    continue
                 }
-                continue
-            }
             if (DBG) {
                 Log.d(
                     TAG,
@@ -683,6 +739,9 @@ object RimDetectorBlock3250 {
                     bestPartialTopPoly = cand.topPoly
                     bestPartialNasalInnerPoly = cand.nasalInnerPoly
                     bestPartialTempleInnerPoly = cand.templeInnerPoly
+                    bestPartialTopObservedY = cand.topObservedY
+                    bestPartialExpHGuessPx = cand.expHGuessPx
+                    bestPartialRatioPenalty = cand.ratioPenalty
                 }
             } else {
                 if (cand.conf > bestConf) {
@@ -696,133 +755,115 @@ object RimDetectorBlock3250 {
                     bestTopPoly = cand.topPoly
                     bestRefY = cand.refY
                     bestSeedX = cand.seedX
+                    bestTopObservedY = cand.topObservedY
+                    bestExpHGuessPx = cand.expHGuessPx
+                    bestRatioPenalty = cand.ratioPenalty
                 }
             }
         }
+
         stage = "BEST_FINAL"
 
-// ----------------------------------------------------------
-// si no hubo candidato normal, intentar candidato parcial
-// ----------------------------------------------------------
-        if (bestConf < 0f) {
-            if (
-                bestPartialConf >= 0f &&
-                bestPartialLeft >= 0 &&
-                bestPartialRight >= 0 &&
-                bestPartialTop >= 0 &&
-                bestPartialBottom > bestPartialTop &&
-                bestPartialRefY >= 0 &&
-                bestPartialSeedX >= 0
-            ) {
-                d(
-                    "RIM[$debugTag] BEST_PARTIAL profile=$profile3250 conf=${f33250(bestPartialConf)} " +
-                            "L/R=$bestPartialLeft/$bestPartialRight " +
-                            "T/B=$bestPartialTop/$bestPartialBottom " +
-                            "topPts=${bestPartialTopPoly.size} " +
-                            "bottomPts=${bestPartialBottomPoly.size} " +
-                            "scale=${f23250(bestPartialScale)} refY=$bestPartialRefY seedX=$bestPartialSeedX"
-                )
+        val winnerIsPartial: Boolean
+        val winnerConfRaw: Float
+        val winnerLeft: Int
+        val winnerRight: Int
+        val winnerTop: Int
+        val winnerBottom: Int
+        val winnerRefY: Int
+        val winnerSeedX: Int
+        val winnerScale: Float
+        val winnerTopPoly: List<Pair<Int, Int>>
+        val winnerBottomPoly: List<Pair<Int, Int>>
+        val winnerNasalInnerPoly: List<Pair<Int, Int>>
+        val winnerTempleInnerPoly: List<Pair<Int, Int>>
+        val winnerTopObservedY: Int?
+        val winnerExpHGuessPx: Float
+        val winnerRatioPenalty: Float
 
-                val innerWpx = (bestPartialRight - bestPartialLeft).toFloat().coerceAtLeast(1f)
-                val pxPerMmXFinal = (innerWpx / hboxInnerMmF).takeIf { it.isFinite() && it > 0f }
-                    ?: return fail("PXMM_PARTIAL", "pxPerMmX invalid")
-
-                val nasalG = (if (nasalAtLeft) bestPartialLeft.toFloat() else bestPartialRight.toFloat()) + roiLeftG
-                val templeG = (if (nasalAtLeft) bestPartialRight.toFloat() else bestPartialLeft.toFloat()) + roiLeftG
-
-                val innerL = min(nasalG, templeG)
-                val innerR = max(nasalG, templeG)
-
-                val refYGlobal = bestPartialRefY.toFloat() + roiTopG
-                val seedXGlobal = bestPartialSeedX.toFloat() + roiLeftG
-
-
-                val res = RimDetectionResult(
-                    ok = true,
-                    confidence = bestPartialConf,
-                    roiPx = RectF(roiLeftG, roiTopG, roiLeftG + w.toFloat(), roiTopG + h.toFloat()),
-
-                    probeYpx = probeYLocal.toFloat() + roiTopG,
-                    topYpx = bestPartialTop.toFloat() + roiTopG,
-                    bottomYpx = bestPartialBottom.toFloat() + roiTopG,
-
-
-                    innerLeftXpx = innerL,
-                    innerRightXpx = innerR,
-
-                    nasalInnerPolylinePx = pairPolylineToGlobal3250(
-                        pts = bestPartialNasalInnerPoly,
-                        roiLeft = roiLeftG,
-                        roiTop = roiTopG
-                    ),
-                    templeInnerPolylinePx = pairPolylineToGlobal3250(
-                        pts = bestPartialTempleInnerPoly,
-                        roiLeft = roiLeftG,
-                        roiTop = roiTopG
-                    ),
-                    nasalOuterPolylinePx = null,
-                    templeOuterPolylinePx = null,
-
-                    nasalInnerXpx = nasalG,
-                    templeInnerXpx = templeG,
-
-                    innerWidthPx = (innerR - innerL),
-                    heightPx = (bestPartialBottom - bestPartialTop).toFloat(),
-
-                    wallsYpx = refYGlobal,
-                    seedXpx = seedXGlobal,
-                    topPolylinePx = pairPolylineToGlobal3250(
-                        pts = bestPartialTopPoly,
-                        roiLeft = roiLeftG,
-                        roiTop = roiTopG
-                    ),
-                    bottomPolylinePx = pairPolylineToGlobal3250(
-                        pts = bestPartialBottomPoly,
-                        roiLeft = roiLeftG,
-                        roiTop = roiTopG
-                    ),
-                    innerArcPolylinePx = null,
-                    outerLeftXpx = null,
-                    outerRightXpx = null,
-                    rimThicknessPx = null
-                )
-
-                return RimDetectPack3250(
-                    result = res,
-                    edges = edgesU8,
-                    w = w,
-                    h = h
+        if (bestConf >= 0f) {
+            if (bestConf < OK_CONF_MIN) {
+                return fail("LOW_CONF", "bestConf=${f33250(bestConf)} < $OK_CONF_MIN")
+            }
+            if (bestLeft < 0 || bestRight < 0 || bestBottom < 0 || bestTop < 0) {
+                return fail("BEST_INV", "best coords invalid")
+            }
+            if (bestRefY < 0 || bestSeedX < 0) {
+                return fail(
+                    "BEST_INV2",
+                    "bestRefY/bestSeedX invalid refY=$bestRefY seed=$bestSeedX"
                 )
             }
 
+            winnerIsPartial = false
+            winnerConfRaw = bestConf
+            winnerLeft = bestLeft
+            winnerRight = bestRight
+            winnerTop = bestTop
+            winnerBottom = bestBottom
+            winnerRefY = bestRefY
+            winnerSeedX = bestSeedX
+            winnerScale = bestScale
+            winnerTopPoly = bestTopPoly
+            winnerBottomPoly = bestBottomPoly
+            winnerNasalInnerPoly = emptyList()
+            winnerTempleInnerPoly = emptyList()
+            winnerTopObservedY = bestTopObservedY
+            winnerExpHGuessPx = bestExpHGuessPx
+            winnerRatioPenalty = bestRatioPenalty
+
+            d(
+                "RIM[$debugTag] BEST_RAW profile=$profile3250 conf=${f33250(winnerConfRaw)} " +
+                        "L/R=$winnerLeft/$winnerRight T/B=$winnerTop/$winnerBottom " +
+                        "scale=${f23250(winnerScale)} refY=$winnerRefY seedX=$winnerSeedX partial=false"
+            )
+        } else if (
+            bestPartialConf >= 0f &&
+            bestPartialLeft >= 0 &&
+            bestPartialRight >= 0 &&
+            bestPartialTop >= 0 &&
+            bestPartialBottom > bestPartialTop &&
+            bestPartialRefY >= 0 &&
+            bestPartialSeedX >= 0
+        ) {
+            winnerIsPartial = true
+            winnerConfRaw = bestPartialConf
+            winnerLeft = bestPartialLeft
+            winnerRight = bestPartialRight
+            winnerTop = bestPartialTop
+            winnerBottom = bestPartialBottom
+            winnerRefY = bestPartialRefY
+            winnerSeedX = bestPartialSeedX
+            winnerScale = bestPartialScale
+            winnerTopPoly = bestPartialTopPoly
+            winnerBottomPoly = bestPartialBottomPoly
+            winnerNasalInnerPoly = bestPartialNasalInnerPoly
+            winnerTempleInnerPoly = bestPartialTempleInnerPoly
+            winnerTopObservedY = bestPartialTopObservedY
+            winnerExpHGuessPx = bestPartialExpHGuessPx
+            winnerRatioPenalty = bestPartialRatioPenalty
+
+            d(
+                "RIM[$debugTag] BEST_RAW profile=$profile3250 conf=${f33250(winnerConfRaw)} " +
+                        "L/R=$winnerLeft/$winnerRight T/B=$winnerTop/$winnerBottom " +
+                        "topPts=${winnerTopPoly.size} bottomPts=${winnerBottomPoly.size} " +
+                        "scale=${f23250(winnerScale)} refY=$winnerRefY seedX=$winnerSeedX partial=true"
+            )
+        } else {
             return fail("NO_CAND", "no candidate survived")
         }
-
-        if (bestConf < OK_CONF_MIN) return fail("LOW_CONF", "bestConf=${f33250(bestConf)} < $OK_CONF_MIN")
-        if (bestLeft < 0 || bestRight < 0 || bestBottom < 0 || bestTop < 0) {
-            return fail("BEST_INV", "best coords invalid")
-        }
-        if (bestRefY < 0 || bestSeedX < 0) {
-            return fail("BEST_INV2", "bestRefY/bestSeedX invalid refY=$bestRefY seed=$bestSeedX")
-        }
-
-        val innerWpx = (bestRight - bestLeft).toFloat().coerceAtLeast(1f)
+        val innerWpx = (winnerRight - winnerLeft).toFloat().coerceAtLeast(1f)
         val pxPerMmXFinal = (innerWpx / hboxInnerMmF).takeIf { it.isFinite() && it > 0f }
-            ?: return fail("PXMM", "pxPerMmX invalid")
+            ?: return fail("PXMM_PARTIAL", "pxPerMmX invalid")
 
-        d(
-            "RIM[$debugTag] BEST profile=$profile3250 conf=${f33250(bestConf)} " +
-                    "L/R=$bestLeft/$bestRight W=${f13250(innerWpx)} pxPerMmX=${f33250(pxPerMmXFinal)} " +
-                    "T/B=$bestTop/$bestBottom scale=${f23250(bestScale)} " +
-                    "refY=$bestRefY seedX=$bestSeedX"
-        )
+        val nasalG = (if (nasalAtLeft) winnerLeft.toFloat() else winnerRight.toFloat()) + roiLeftG
+        val templeG = (if (nasalAtLeft) winnerRight.toFloat() else winnerLeft.toFloat()) + roiLeftG
 
-        val nasalG = (if (nasalAtLeft) bestLeft.toFloat() else bestRight.toFloat()) + roiLeftG
-        val templeG = (if (nasalAtLeft) bestRight.toFloat() else bestLeft.toFloat()) + roiLeftG
-
-// innerLeft/Right = SOLO min/max
         val innerL = min(nasalG, templeG)
         val innerR = max(nasalG, templeG)
+
+        val refYGlobal = winnerRefY.toFloat() + roiTopG
+        val seedXGlobal = winnerSeedX.toFloat() + roiLeftG
 
         // ----------------------------------------------------------
         // arcos candidatos laterales
@@ -836,24 +877,25 @@ object RimDetectorBlock3250 {
             maskU8 = maskU8,
             w = w,
             h = h,
-            seedXInside = bestSeedX,
-            yRef = bestRefY,
-            topY = bestTop,
-            bottomY = bestBottom,
+            seedXInside = winnerSeedX,
+            yRef = winnerRefY,
+            topY = winnerTop,
+            bottomY = winnerBottom,
             minOuterGapPx = minOuterGapPx,
             maxOuterGapPx = maxOuterGapPx,
             profile3250 = profile3250
         )
+
         val innerLeftValidated = keepPolylineNearXRef3250(
-            pts = sideArcLocal.innerLeft,
-            xRef = bestLeft.toFloat(),
-            sideSign = -1
+        pts = sideArcLocal.innerLeft,
+        xRef = winnerLeft.toFloat(),
+        sideSign = -1
         )
 
         val innerRightValidated = keepPolylineNearXRef3250(
-            pts = sideArcLocal.innerRight,
-            xRef = bestRight.toFloat(),
-            sideSign = +1
+        pts = sideArcLocal.innerRight,
+        xRef = winnerRight.toFloat(),
+        sideSign = +1
         )
 
         val sideArcLocalValidated = sideArcLocal.copy(
@@ -861,43 +903,41 @@ object RimDetectorBlock3250 {
             innerRight = innerRightValidated
         )
 
-        val innerLeftPolyG = localPolylineToGlobal3250(sideArcLocalValidated.innerLeft, roiLeftG, roiTopG)
-        val innerRightPolyG = localPolylineToGlobal3250(sideArcLocalValidated.innerRight, roiLeftG, roiTopG)
+        val innerLeftLocal = sideArcLocalValidated.innerLeft
+        val innerRightLocal = sideArcLocalValidated.innerRight
+
         val outerLeftPolyG = localPolylineToGlobal3250(sideArcLocalValidated.outerLeft, roiLeftG, roiTopG)
         val outerRightPolyG = localPolylineToGlobal3250(sideArcLocalValidated.outerRight, roiLeftG, roiTopG)
 
-        val nasalInnerPolyG = if (nasalAtLeft) innerLeftPolyG else innerRightPolyG
-        val templeInnerPolyG = if (nasalAtLeft) innerRightPolyG else innerLeftPolyG
+        val winnerNasalInnerLocal = winnerNasalInnerPoly.map { (x, y) ->
+            PointF(x.toFloat(), y.toFloat())
+        }
+        val winnerTempleInnerLocal = winnerTempleInnerPoly.map { (x, y) ->
+            PointF(x.toFloat(), y.toFloat())
+        }
+
+        val nasalInnerLocal =
+            if (winnerIsPartial && winnerNasalInnerLocal.isNotEmpty()) {
+                winnerNasalInnerLocal
+            } else {
+                if (nasalAtLeft) innerLeftLocal else innerRightLocal
+            }
+
+        val templeInnerLocal =
+            if (winnerIsPartial && winnerTempleInnerLocal.isNotEmpty()) {
+                winnerTempleInnerLocal
+            } else {
+                if (nasalAtLeft) innerRightLocal else innerLeftLocal
+            }
+
+        val nasalInnerPolyG = localPolylineToGlobal3250(nasalInnerLocal, roiLeftG, roiTopG)
+        val templeInnerPolyG = localPolylineToGlobal3250(templeInnerLocal, roiLeftG, roiTopG)
         val nasalOuterPolyG = if (nasalAtLeft) outerLeftPolyG else outerRightPolyG
         val templeOuterPolyG = if (nasalAtLeft) outerRightPolyG else outerLeftPolyG
 
-        val bottomPolyGlobal = if (bestBottomPoly.isNotEmpty()) {
-            bestBottomPoly
-                .map { (x, y) -> PointF(x.toFloat() + roiLeftG, y.toFloat() + roiTopG) }
-                .sortedBy { it.x }
-        } else {
-            null
-        }
-
-        val refYGlobal = bestRefY.toFloat() + roiTopG
-        val seedXGlobal = bestSeedX.toFloat() + roiLeftG
-
-        if (DBG) {
-            Log.d(
-                TAG,
-                "RIMARC[$debugTag] profile=$profile3250 sideArcs " +
-                        "nIn=${nasalInnerPolyG?.size ?: 0} tIn=${templeInnerPolyG?.size ?: 0} " +
-                        "nOut=${nasalOuterPolyG?.size ?: 0} tOut=${templeOuterPolyG?.size ?: 0} " +
-                        "top=$bestTop bot=$bestBottom seedX=$bestSeedX"
-            )
-        }
-
-        val nasalInnerLocal = if (nasalAtLeft) sideArcLocalValidated.innerLeft else sideArcLocalValidated.innerRight
-        val templeInnerLocal = if (nasalAtLeft) sideArcLocalValidated.innerRight else sideArcLocalValidated.innerLeft
-
         val innerArcLocal = buildOfficialInnerArc3250(
-            bottomLocal = bestBottomPoly.map { (x, y) -> PointF(x.toFloat(), y.toFloat()) },
-            topLocal = bestTopPoly.map { (x, y) -> PointF(x.toFloat(), y.toFloat()) },
+            bottomLocal = winnerBottomPoly.map { (x, y) -> PointF(x.toFloat(), y.toFloat()) },
+            topLocal = winnerTopPoly.map { (x, y) -> PointF(x.toFloat(), y.toFloat()) },
             nasalLocal = nasalInnerLocal,
             templeLocal = templeInnerLocal,
             maxJoinDistPx = 14f,
@@ -909,44 +949,61 @@ object RimDetectorBlock3250 {
             if (innerArcLocal.isNotEmpty()) localPolylineToGlobal3250(innerArcLocal, roiLeftG, roiTopG)
             else null
         val topPolyGlobal =
-            if (bestTopPoly.isNotEmpty()) {
+            if (winnerTopPoly.isNotEmpty()) {
                 pairPolylineToGlobal3250(
-                    pts = bestTopPoly,
+                    pts = winnerTopPoly,
                     roiLeft = roiLeftG,
                     roiTop = roiTopG
                 )
             } else {
                 null
             }
+        val bottomPolyGlobal =
+            if (winnerBottomPoly.isNotEmpty()) {
+                winnerBottomPoly
+                    .map { (x, y) -> PointF(x.toFloat() + roiLeftG, y.toFloat() + roiTopG) }
+                    .sortedBy { it.x }
+            } else {
+                null
+            }
+        val gateResult3250 = applyProfileGate3250(
+            RimGateInput3250(
+                profile3250 = profile3250,
+                baseConfidence = winnerConfRaw,
+                isPartial = winnerIsPartial,
+                hasInnerLaterals = !nasalInnerPolyG.isNullOrEmpty() && !templeInnerPolyG.isNullOrEmpty(),
+                hasOuterLaterals = !nasalOuterPolyG.isNullOrEmpty() && !templeOuterPolyG.isNullOrEmpty(),
+                topObservedY = winnerTopObservedY,
+                topUsedY = winnerTop,
+                bottomUsedY = winnerBottom,
+                expHGuessPx = winnerExpHGuessPx,
+                ratioPenalty = winnerRatioPenalty
+            )
+        )
 
+        if (!gateResult3250.accepted) {
+            return fail("PROFILE_GATE", gateResult3250.reason3250)
+        }
 
         val res = RimDetectionResult(
             ok = true,
-            confidence = bestConf,
+            confidence = gateResult3250.confidenceOut,
             roiPx = RectF(roiLeftG, roiTopG, roiLeftG + w.toFloat(), roiTopG + h.toFloat()),
-
             probeYpx = probeYLocal.toFloat() + roiTopG,
-            topYpx = bestTop.toFloat() + roiTopG,
-            bottomYpx = bestBottom.toFloat() + roiTopG,
-
+            topYpx = winnerTop.toFloat() + roiTopG,
+            bottomYpx = winnerBottom.toFloat() + roiTopG,
             innerLeftXpx = innerL,
             innerRightXpx = innerR,
-
             nasalInnerPolylinePx = nasalInnerPolyG,
             templeInnerPolylinePx = templeInnerPolyG,
             nasalOuterPolylinePx = nasalOuterPolyG,
             templeOuterPolylinePx = templeOuterPolyG,
-
             nasalInnerXpx = nasalG,
             templeInnerXpx = templeG,
-
             innerWidthPx = (innerR - innerL),
-            heightPx = (bestBottom - bestTop).toFloat(),
-
-            // mantenemos el campo por compatibilidad; ahora representa la fila oficial de referencia
+            heightPx = (winnerBottom - winnerTop).toFloat(),
             wallsYpx = refYGlobal,
             seedXpx = seedXGlobal,
-
             topPolylinePx = topPolyGlobal,
             bottomPolylinePx = bottomPolyGlobal,
             innerArcPolylinePx = innerArcGlobal,
@@ -955,7 +1012,7 @@ object RimDetectorBlock3250 {
             rimThicknessPx = null
         )
 
-        return RimDetectPack3250(
+           return RimDetectPack3250(
             result = res,
             edges = edgesU8,
             w = w,
@@ -1545,6 +1602,7 @@ object RimDetectorBlock3250 {
         edgesU8: ByteArray,
         dirU8: ByteArray? = null,
         maskU8: ByteArray?,
+        vScoreU8: ByteArray? = null,
         w: Int,
         h: Int,
         seedXInside: Int,
@@ -1573,14 +1631,17 @@ object RimDetectorBlock3250 {
             edgesU8 = edgesU8,
             dirU8 = dirU8,
             maskU8 = maskU8,
+            vScoreU8 = vScoreU8,
             w = w,
             h = h,
             seedXInside = seedXInside,
             yRef = yRef.coerceIn(y0Inner, y1Inner),
             minDist = 4,
             maxDist = ((w * 0.42f).roundToInt()).coerceAtLeast(24),
-            bandHalf = 3
-        ) ?: return SideArcCandidatesLocal3250(
+            bandHalf = 3,
+            profile3250 = profile3250
+        )
+            ?: return SideArcCandidatesLocal3250(
             innerLeft = emptyList(),
             innerRight = emptyList(),
             outerLeft = emptyList(),
@@ -1599,7 +1660,8 @@ object RimDetectorBlock3250 {
             sideSign = -1,
             y0 = y0Inner,
             y1 = y1Inner,
-            stepY = stepY
+            stepY = stepY,
+            profile3250 = profile3250
         )
 
         val innerRightRaw = traceInnerPolylineFromSeedRow3250(
@@ -1614,7 +1676,8 @@ object RimDetectorBlock3250 {
             sideSign = +1,
             y0 = y0Inner,
             y1 = y1Inner,
-            stepY = stepY
+            stepY = stepY,
+            profile3250 = profile3250
         )
 
         val maxJumpY = max(stepY * 2, 6).toFloat()
@@ -1814,13 +1877,15 @@ object RimDetectorBlock3250 {
         edgesU8: ByteArray,
         dirU8: ByteArray? = null,
         maskU8: ByteArray?,
+        vScoreU8: ByteArray? = null,
         w: Int,
         h: Int,
         seedXInside: Int,
         yRef: Int,
         minDist: Int,
         maxDist: Int,
-        bandHalf: Int
+        bandHalf: Int,
+        profile3250: RimProfile3250
     ): InnerSeedRow3250? {
         val ySeed = yRef.coerceIn(0, h - 1)
 
@@ -1828,13 +1893,15 @@ object RimDetectorBlock3250 {
             edgesU8 = edgesU8,
             dirU8 = dirU8,
             maskU8 = maskU8,
+            vScoreU8 = vScoreU8,
             w = w,
             h = h,
             seedX = seedXInside,
             yRef = ySeed,
             bandHalf = bandHalf,
             minDist = minDist,
-            maxDist = maxDist
+            maxDist = maxDist,
+            profile3250 = profile3250
         ) ?: return null
 
         return InnerSeedRow3250(
@@ -1843,7 +1910,6 @@ object RimDetectorBlock3250 {
             rightX = pair.second
         )
     }
-
     private fun traceInnerPolylineFromSeedRow3250(
         edgesU8: ByteArray,
         dirU8: ByteArray? = null,
@@ -1853,10 +1919,11 @@ object RimDetectorBlock3250 {
         seedX: Int,
         seedY: Int,
         centerInsideSeedX: Int,
-        sideSign: Int, // left=-1, right=+1
+        sideSign: Int,
         y0: Int,
         y1: Int,
-        stepY: Int
+        stepY: Int,
+        profile3250: RimProfile3250
     ): List<PointF> {
 
         val up = traceInnerHalf3250(
@@ -1870,8 +1937,10 @@ object RimDetectorBlock3250 {
             sideSign = sideSign,
             yStart = seedY - stepY,
             yEndInclusive = y0,
-            yStep = -stepY
+            yStep = -stepY,
+            profile3250 = profile3250
         )
+
 
         val down = traceInnerHalf3250(
             edgesU8 = edgesU8,
@@ -1884,7 +1953,8 @@ object RimDetectorBlock3250 {
             sideSign = sideSign,
             yStart = seedY + stepY,
             yEndInclusive = y1,
-            yStep = +stepY
+            yStep = +stepY,
+            profile3250 = profile3250
         )
 
         val out = ArrayList<PointF>(up.size + 1 + down.size)
@@ -1894,70 +1964,72 @@ object RimDetectorBlock3250 {
         return out.sortedBy { it.y }
     }
 
-private fun traceInnerHalf3250(
-    edgesU8: ByteArray,
-    dirU8: ByteArray? = null,
-    maskU8: ByteArray?,
-    w: Int,
-    h: Int,
-    startX: Int,
-    centerInsideSeedX: Int,
-    sideSign: Int,
-    yStart: Int,
-    yEndInclusive: Int,
-    yStep: Int
-): List<PointF> {
+    private fun traceInnerHalf3250(
+        edgesU8: ByteArray,
+        dirU8: ByteArray? = null,
+        maskU8: ByteArray?,
+        w: Int,
+        h: Int,
+        startX: Int,
+        centerInsideSeedX: Int,
+        sideSign: Int,
+        yStart: Int,
+        yEndInclusive: Int,
+        yStep: Int,
+        profile3250: RimProfile3250
+    ): List<PointF> {
 
-    val out = ArrayList<PointF>()
-    var prevX = startX.coerceIn(0, w - 1)
-    var prevDx = 0
-    var missCount = 0
+        val out = ArrayList<PointF>()
+        var prevX = startX.coerceIn(0, w - 1)
+        var prevDx = 0
+        var missCount = 0
 
-    var y = yStart
-    while (if (yStep > 0) y <= yEndInclusive else y >= yEndInclusive) {
+        var y = yStart
+        while (if (yStep > 0) y <= yEndInclusive else y >= yEndInclusive) {
 
-        val expectedX = (prevX + prevDx).coerceIn(0, w - 1)
-        val radius = when (missCount) {
-            0 -> 10
-            1 -> 14
-            else -> 18
-        }
+            val expectedX = (prevX + prevDx).coerceIn(0, w - 1)
+            val radius = when (missCount) {
+                0 -> 10
+                1 -> 14
+                else -> 18
+            }
 
-        val xFound = searchNearestInnerAroundPrevX3250(
-            edgesU8 = edgesU8,
-            dirU8 = dirU8,
-            maskU8 = maskU8,
-            w = w,
-            h = h,
-            y = y,
-            prevX = expectedX,
-            centerInsideSeedX = centerInsideSeedX,
-            sideSign = sideSign,
-            searchRadiusPx = radius
-        )
+            val xFound = searchNearestInnerAroundPrevX3250(
+                edgesU8 = edgesU8,
+                dirU8 = dirU8,
+                maskU8 = maskU8,
+                w = w,
+                h = h,
+                y = y,
+                prevX = expectedX,
+                centerInsideSeedX = centerInsideSeedX,
+                sideSign = sideSign,
+                searchRadiusPx = radius,
+                profile3250 = profile3250
+            )
 
-        if (xFound != null) {
-            val dxNow = xFound - prevX
+            if (xFound != null) {
+                val dxNow = xFound - prevX
 
-            if (abs(dxNow) > 12) {
+                if (abs(dxNow) > 12) {
+                    missCount++
+                    if (missCount > 1) break
+                } else {
+                    out.add(PointF(xFound.toFloat(), y.toFloat()))
+                    prevDx = dxNow
+                    prevX = xFound
+                    missCount = 0
+                }
+            } else {
                 missCount++
                 if (missCount > 1) break
-            } else {
-                out.add(PointF(xFound.toFloat(), y.toFloat()))
-                prevDx = dxNow
-                prevX = xFound
-                missCount = 0
             }
-        } else {
-            missCount++
-            if (missCount > 1) break
+
+            y += yStep
         }
 
-        y += yStep
+        return out
     }
-
-    return out
-}
     private fun traceOuterFromInnerGuide3250(
         edgesU8: ByteArray,
         dirU8: ByteArray? = null,
@@ -1974,7 +2046,7 @@ private fun traceInnerHalf3250(
         profile3250: RimProfile3250
     ): List<PointF> {
         if (innerGuide.isEmpty()) return emptyList()
-        if (profile3250 == RimProfile3250.PERFORADO) return emptyList()
+        if (profile3250 != RimProfile3250.FULL_RIM) return emptyList()
 
         val raw = ArrayList<PointF>()
         var prevGap: Int? = null
@@ -2011,7 +2083,6 @@ private fun traceInnerHalf3250(
 
         return raw.sortedBy { it.y }
     }
-
     private fun fillSmallSideGaps3250(
         pts: List<PointF>,
         stepY: Int,
@@ -2742,7 +2813,7 @@ private fun traceInnerHalf3250(
         topSearchMinY: Int,
         topExpectedY: Int?,
         h: Int
-    ): ScaleCandidate3250? {
+    ): ScaleCandidate3250?{
 
         val bottomY = bottomPick.yMax
 
@@ -2796,7 +2867,6 @@ private fun traceInnerHalf3250(
         val innerH = (bottomY - topUsedY).coerceAtLeast(1)
         val minH0 = max(70, (h * 0.18f).roundToInt())
         val maxH0 = (h * 0.92f).roundToInt()
-
         if (innerH !in minH0..maxH0) {
             return null
         }
@@ -2858,6 +2928,8 @@ private fun traceInnerHalf3250(
             topPoly = topPoly,
             topObservedY = topObservedY,
             topConfidence = topConfidence,
+            ratioPenalty = ratioPenalty,
+            expHGuessPx = if (expHpx.isFinite() && expHpx > 0f) expHpx else innerH.toFloat(),
             isPartial = false
         )
     }
@@ -2988,20 +3060,22 @@ private fun traceInnerHalf3250(
             )
         }
         return ScaleCandidate3250(
-            conf = partialConf,
-            left = -1,
-            right = -1,
-            top = topUsedY,
-            bottom = bottomUsedY,
-            refY = probeYLocal,
-            seedX = -1,
-            scale = scale,
-            bottomPoly = bottomPick?.poly ?: emptyList(),
-            topPoly = topPoly,
-            topObservedY = topObservedY,
-            topConfidence = topConfidence,
-            isPartial = true
-        )
+        conf = partialConf,
+        left = -1,
+        right = -1,
+        top = topUsedY,
+        bottom = bottomUsedY,
+        refY = probeYLocal,
+        seedX = -1,
+        scale = scale,
+        bottomPoly = bottomPick?.poly ?: emptyList(),
+        topPoly = topPoly,
+        topObservedY = topObservedY,
+        topConfidence = topConfidence,
+        ratioPenalty = ratioPenalty,
+        expHGuessPx = expHpxGuess,
+        isPartial = true
+    )
     }
     private fun buildVerticalGuidePoly3250(
         x: Int,
