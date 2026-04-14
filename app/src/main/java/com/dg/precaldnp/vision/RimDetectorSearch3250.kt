@@ -197,6 +197,7 @@ internal fun searchNearestInnerAroundPrevX3250(
     edgesU8: ByteArray,
     dirU8: ByteArray? = null,
     maskU8: ByteArray? = null,
+    vScoreU8: ByteArray? = null,
     w: Int,
     h: Int,
     y: Int,

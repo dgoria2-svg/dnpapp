@@ -875,6 +875,7 @@ object RimDetectorBlock3250 {
             edgesU8 = edgesU8,
             dirU8 = dirU8,
             maskU8 = maskU8,
+            vScoreU8 = vScoreU8,
             w = w,
             h = h,
             seedXInside = winnerSeedX,
@@ -966,12 +967,20 @@ object RimDetectorBlock3250 {
             } else {
                 null
             }
+        val hasInnerLateralsForGate =
+            if (!winnerIsPartial) {
+                val winnerInnerW = winnerRight - winnerLeft
+                winnerRight > winnerLeft && winnerInnerW >= 60
+            } else {
+                !nasalInnerPolyG.isNullOrEmpty() && !templeInnerPolyG.isNullOrEmpty()
+            }
+
         val gateResult3250 = applyProfileGate3250(
             RimGateInput3250(
                 profile3250 = profile3250,
                 baseConfidence = winnerConfRaw,
                 isPartial = winnerIsPartial,
-                hasInnerLaterals = !nasalInnerPolyG.isNullOrEmpty() && !templeInnerPolyG.isNullOrEmpty(),
+                hasInnerLaterals = hasInnerLateralsForGate,
                 hasOuterLaterals = !nasalOuterPolyG.isNullOrEmpty() && !templeOuterPolyG.isNullOrEmpty(),
                 topObservedY = winnerTopObservedY,
                 topUsedY = winnerTop,
@@ -1968,6 +1977,7 @@ object RimDetectorBlock3250 {
         edgesU8: ByteArray,
         dirU8: ByteArray? = null,
         maskU8: ByteArray?,
+        vScoreU8: ByteArray? = null,
         w: Int,
         h: Int,
         startX: Int,
@@ -1998,6 +2008,7 @@ object RimDetectorBlock3250 {
                 edgesU8 = edgesU8,
                 dirU8 = dirU8,
                 maskU8 = maskU8,
+                vScoreU8 = vScoreU8,
                 w = w,
                 h = h,
                 y = y,
