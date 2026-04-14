@@ -211,13 +211,13 @@ internal fun searchNearestInnerAroundPrevX3250(
         return if (sideSign < 0) x < centerInsideSeedX else x > centerInsideSeedX
     }
 
-    fun isValidInnerAt(x: Int): Boolean {
-        if (x !in 0 until w) return false
-        if (!onCorrectSide(x)) return false
+    fun scoreInnerAt(x: Int): Int? {
+        if (x !in 0 until w) return null
+        if (!onCorrectSide(x)) return null
 
         val idx = y * w + x
-        if (isMaskedPx3250(maskU8, idx)) return false
-        if ((edgesU8[idx].toInt() and 0xFF) == 0) return false
+        if (isMaskedPx3250(maskU8, idx)) return null
+        if ((edgesU8[idx].toInt() and 0xFF) == 0) return null
 
         val support = verticalSupportAt3250(
             edgesU8 = edgesU8,
@@ -236,29 +236,50 @@ internal fun searchNearestInnerAroundPrevX3250(
             RimProfile3250.RANURADO -> 2
         }
 
-        if (support < minSupport) return false
+        if (support < minSupport) return null
 
-        if (dirU8 != null) {
-            val d = dirU8[idx].toInt() and 0xFF
-            if (!isVertEdgeDir3250(d)) return false
-        }
+        val dirBonus =
+            if (dirU8 != null) {
+                val d = dirU8[idx].toInt() and 0xFF
+                if (!isVertEdgeDir3250(d)) return null
+                100
+            } else {
+                0
+            }
 
-        return true
+        val vScore =
+            if (vScoreU8 != null && vScoreU8.size == w * h) {
+                vScoreU8[idx].toInt() and 0xFF
+            } else {
+                0
+            }
+
+        return support * 100 + dirBonus + vScore * 2
     }
 
     for (d in 0..searchRadiusPx) {
         if (d == 0) {
-            if (isValidInnerAt(prevX)) return prevX
+            val s0 = scoreInnerAt(prevX)
+            if (s0 != null) return prevX
         } else {
             val x1 = prevX - d
             val x2 = prevX + d
 
+            val s1 = scoreInnerAt(x1)
+            val s2 = scoreInnerAt(x2)
+
             if (sideSign < 0) {
-                if (isValidInnerAt(x1)) return x1
-                if (isValidInnerAt(x2)) return x2
+                when {
+                    s1 != null && s2 != null -> return if (s1 >= s2) x1 else x2
+                    s1 != null -> return x1
+                    s2 != null -> return x2
+                }
             } else {
-                if (isValidInnerAt(x2)) return x2
-                if (isValidInnerAt(x1)) return x1
+                when {
+                    s1 != null && s2 != null -> return if (s2 >= s1) x2 else x1
+                    s2 != null -> return x2
+                    s1 != null -> return x1
+                }
             }
         }
     }
@@ -308,10 +329,35 @@ internal fun searchOuterFromInner3250(
         return support >= minSupport
     }
 
-    for (gap in minOuterGapPx..maxOuterGapPx) {
-        val x = innerX + outwardSign * gap
-        if (x !in 0 until w) break
-        if (isValidOuterAt(x)) return x
+    val loGap = minOuterGapPx.coerceAtLeast(0)
+    val hiGap = maxOuterGapPx.coerceAtLeast(loGap)
+
+    fun xFromGap(gap: Int): Int = innerX + outwardSign * gap
+
+    val preferredGap = prevGapPx?.coerceIn(loGap, hiGap)
+
+    if (preferredGap != null) {
+        for (d in 0..(hiGap - loGap)) {
+            val g1 = preferredGap - d
+            if (g1 in loGap..hiGap) {
+                val x1 = xFromGap(g1)
+                if (x1 in 0 until w && isValidOuterAt(x1)) return x1
+            }
+
+            if (d > 0) {
+                val g2 = preferredGap + d
+                if (g2 in loGap..hiGap) {
+                    val x2 = xFromGap(g2)
+                    if (x2 in 0 until w && isValidOuterAt(x2)) return x2
+                }
+            }
+        }
+    } else {
+        for (gap in loGap..hiGap) {
+            val x = xFromGap(gap)
+            if (x !in 0 until w) break
+            if (isValidOuterAt(x)) return x
+        }
     }
 
     return null
@@ -400,6 +446,7 @@ internal fun searchOuterFromInner3250(
 
         return grouped.sortedBy { it.y }
     }
+
     internal fun chooseSingleBottomInnerCandidate3250(
         candidates: List<BottomCand3250>,
         expectedY: Int,
@@ -409,6 +456,7 @@ internal fun searchOuterFromInner3250(
 
         var best: BottomCand3250? = null
         var bestScore = Int.MIN_VALUE
+
 
         for (c in candidates) {
             val belowPenalty = when (profile3250) {
@@ -644,7 +692,7 @@ internal fun collectTopCandidatesInWindow3250(
         val support = horizontalSupportAt3250(
             edgesU8 = edgesU8,
             dirU8 = dirU8,
-            maskU8 = null,
+            maskU8 = maskU8,
             w = w,
             h = h,
             x = x,
@@ -695,7 +743,8 @@ internal fun collectTopCandidatesInWindow3250(
 }
 internal fun chooseSingleTopInnerCandidate3250(
     candidates: List<TopCand3250>,
-    expectedY: Int
+    expectedY: Int,
+    profile3250: RimProfile3250
 ): TopCand3250? {
     if (candidates.isEmpty()) return null
 
@@ -703,7 +752,11 @@ internal fun chooseSingleTopInnerCandidate3250(
     var bestScore = Int.MIN_VALUE
 
     for (c in candidates) {
-        val belowPenalty = max(0, c.y - expectedY) * 16
+        val belowPenalty = when (profile3250) {
+            RimProfile3250.FULL_RIM -> max(0, c.y - expectedY) * 16
+            RimProfile3250.RANURADO -> max(0, c.y - expectedY) * 10
+            RimProfile3250.PERFORADO -> max(0, c.y - expectedY) * 6
+        }
         val dyPenalty = abs(c.y - expectedY) * 12
         val dirBonus = if (c.dirScore >= 100) 40 else 0
         val supportBonus = c.support * 12
@@ -733,7 +786,8 @@ internal fun findBestTopEdgeInWindow3250(
     b: Int,
     y0: Int,
     y1: Int,
-    expectedY: Int
+    expectedY: Int,
+    profile3250: RimProfile3250
 ): Int {
     if (w <= 0) return -1
 
@@ -765,6 +819,7 @@ internal fun findBestTopEdgeInWindow3250(
 
         val best = chooseSingleTopInnerCandidate3250(
             candidates = candidates,
+            profile3250 = profile3250,
             expectedY = expectedY
         ) ?: continue
 

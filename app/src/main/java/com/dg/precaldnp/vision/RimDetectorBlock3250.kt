@@ -624,7 +624,8 @@ object RimDetectorBlock3250 {
                 minCoverage = 0.40f,
                 contJumpPx = CONT_JUMP_PX,
                 expectedTopY = expectedTopY,
-                expectedTolPx = topTolPx
+                expectedTolPx = topTolPx,
+                profile3250 = profile3250
             )
 
             if (DBG) {
@@ -641,9 +642,11 @@ object RimDetectorBlock3250 {
 
             val hasTopObs =
                 topPick != null &&
-                        topPick.coverage > 0f &&
-                        topPick.continuity > 0f &&
-                        topPick.confidence > 0f
+                        topPick.coverage >= 0.40f &&
+                        topPick.continuity >= 0.40f &&
+                        topPick.confidence >= 0.60f &&
+                        topPick.yMed >= 0 &&
+                        abs(topPick.yMed - expectedTopY) <= topTolPx
 
             val hasBottomObs =
                 bottomPick != null
@@ -968,12 +971,7 @@ object RimDetectorBlock3250 {
                 null
             }
         val hasInnerLateralsForGate =
-            if (!winnerIsPartial) {
-                val winnerInnerW = winnerRight - winnerLeft
-                winnerRight > winnerLeft && winnerInnerW >= 60
-            } else {
-                !nasalInnerPolyG.isNullOrEmpty() && !templeInnerPolyG.isNullOrEmpty()
-            }
+            !nasalInnerPolyG.isNullOrEmpty() && !templeInnerPolyG.isNullOrEmpty()
 
         val gateResult3250 = applyProfileGate3250(
             RimGateInput3250(
@@ -1262,7 +1260,8 @@ object RimDetectorBlock3250 {
                 expectedY = expectedBottomY ?: ySeed0,
                 profile3250 = profile3250,
                 minOuterGapPx = minOuterGapPx,
-                maxOuterGapPx = maxOuterGapPx
+                maxOuterGapPx = maxOuterGapPx,
+
             )
 
             if (y < 0) {
@@ -2518,6 +2517,7 @@ object RimDetectorBlock3250 {
         yMin: Int,
         stepX: Int,
         minHits: Int,
+        profile3250: RimProfile3250,
         minCoverage: Float,
         contJumpPx: Int,
         expectedTopY: Int?,
@@ -2553,7 +2553,10 @@ object RimDetectorBlock3250 {
                 b = x1,
                 y0 = y0Soft,
                 y1 = min(y1Soft, ySeed0),
-                expectedY = expectedTopY ?: y0Soft
+                expectedY = expectedTopY ?: y0Soft,
+                profile3250 = profile3250
+
+
             )
 
             if (y < 0) {
@@ -2567,8 +2570,9 @@ object RimDetectorBlock3250 {
                     b = x1,
                     y0 = yLo,
                     y1 = ySeed0,
-                    expectedY = expectedTopY ?: yLo
-                )
+                    expectedY = expectedTopY ?: yLo,
+                    profile3250 = profile3250
+                    )
             }
 
             if (y < 0) {
@@ -2586,7 +2590,8 @@ object RimDetectorBlock3250 {
                     b = x1,
                     y0 = y0Wide,
                     y1 = y1Wide,
-                    expectedY = expectedTopY ?: yCenter
+                    expectedY = expectedTopY ?: yCenter,
+                    profile3250 = profile3250
                 )
             }
 
@@ -2651,7 +2656,8 @@ object RimDetectorBlock3250 {
                     b = xb,
                     y0 = yWin0,
                     y1 = yWin1,
-                    expectedY = prevY
+                    expectedY = prevY,
+                    profile3250 = profile3250
                 )
 
                 if (bestY < 0 && expectedTopY != null) {
@@ -2668,7 +2674,8 @@ object RimDetectorBlock3250 {
                         b = xb,
                         y0 = ySoft0,
                         y1 = ySoft1,
-                        expectedY = expectedTopY
+                        expectedY = expectedTopY,
+                        profile3250 = profile3250
                     )
                 }
 
@@ -2686,7 +2693,8 @@ object RimDetectorBlock3250 {
                         b = xb,
                         y0 = yWide0,
                         y1 = yWide1,
-                        expectedY = prevY
+                        expectedY = prevY,
+                        profile3250 = profile3250
                     )
                 }
 
