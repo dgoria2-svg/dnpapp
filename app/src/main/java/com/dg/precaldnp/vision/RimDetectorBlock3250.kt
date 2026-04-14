@@ -2813,7 +2813,7 @@ object RimDetectorBlock3250 {
         topSearchMinY: Int,
         topExpectedY: Int?,
         h: Int
-    ): ScaleCandidate3250{
+    ): ScaleCandidate3250?{
 
         val bottomY = bottomPick.yMax
 
@@ -2867,19 +2867,9 @@ object RimDetectorBlock3250 {
         val innerH = (bottomY - topUsedY).coerceAtLeast(1)
         val minH0 = max(70, (h * 0.18f).roundToInt())
         val maxH0 = (h * 0.92f).roundToInt()
-
-        val confHeight =
-            when {
-                innerH < minH0 -> {
-                    norm013250(innerH.toFloat(), (minH0 * 0.65f), minH0.toFloat())
-                }
-                innerH > maxH0 -> {
-                    1f - norm013250(innerH.toFloat(), maxH0.toFloat(), (maxH0 * 1.20f))
-                }
-                else -> {
-                    1f
-                }
-            }.coerceIn(0f, 1f)
+        if (innerH !in minH0..maxH0) {
+            return null
+        }
 
         val confCoverage =
             norm013250(bottomPick.coverage, 0.55f, 0.95f)
@@ -2900,8 +2890,6 @@ object RimDetectorBlock3250 {
                             0.10f * confSamples +
                             0.25f * confTop
                     ).coerceIn(0f, 1f)
-
-        conf *= confHeight
 
         conf *=
             (0.75f + 0.25f * ratioPenalty).coerceIn(0.75f, 1.00f)
