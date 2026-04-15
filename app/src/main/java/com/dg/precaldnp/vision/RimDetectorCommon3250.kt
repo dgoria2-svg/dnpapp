@@ -82,10 +82,10 @@ internal fun buildRimSearchPolicy3250(
 ): RimSearchPolicy3250 =
     when (profile3250) {
         RimProfile3250.FULL_RIM -> RimSearchPolicy3250(
-            requireOuter = true,
+            requireOuter = false,
             requireTop = false,
             innerMandatory = true,
-            validateOuterAgainstInner = true
+            validateOuterAgainstInner = false
         )
         RimProfile3250.RANURADO -> RimSearchPolicy3250(
             requireOuter = false,
@@ -143,22 +143,6 @@ internal fun applyProfileGate3250(
 
     when (input.profile3250) {
         RimProfile3250.FULL_RIM -> {
-            if (!input.hasOuterLaterals) {
-                return RimGateResult3250(
-                    accepted = false,
-                    confidenceOut = 0f,
-                    reason3250 = "missing_outer_full_rim"
-                )
-            }
-
-            if (input.isPartial) {
-                return RimGateResult3250(
-                    accepted = false,
-                    confidenceOut = 0f,
-                    reason3250 = "partial_not_allowed_full_rim"
-                )
-            }
-
             if (hasTopObs && hErrRel > 0.18f) {
                 return RimGateResult3250(
                     accepted = false,
@@ -166,6 +150,7 @@ internal fun applyProfileGate3250(
                     reason3250 = "height_conflict_full_rim"
                 )
             }
+
         }
 
         RimProfile3250.RANURADO -> {

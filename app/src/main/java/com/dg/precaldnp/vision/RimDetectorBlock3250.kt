@@ -890,28 +890,8 @@ object RimDetectorBlock3250 {
             profile3250 = profile3250
         )
 
-        val innerLeftValidated = keepPolylineNearXRef3250(
-        pts = sideArcLocal.innerLeft,
-        xRef = winnerLeft.toFloat(),
-        sideSign = -1
-        )
-
-        val innerRightValidated = keepPolylineNearXRef3250(
-        pts = sideArcLocal.innerRight,
-        xRef = winnerRight.toFloat(),
-        sideSign = +1
-        )
-
-        val sideArcLocalValidated = sideArcLocal.copy(
-            innerLeft = innerLeftValidated,
-            innerRight = innerRightValidated
-        )
-
-        val innerLeftLocal = sideArcLocalValidated.innerLeft
-        val innerRightLocal = sideArcLocalValidated.innerRight
-
-        val outerLeftPolyG = localPolylineToGlobal3250(sideArcLocalValidated.outerLeft, roiLeftG, roiTopG)
-        val outerRightPolyG = localPolylineToGlobal3250(sideArcLocalValidated.outerRight, roiLeftG, roiTopG)
+        val outerLeftPolyG = localPolylineToGlobal3250(sideArcLocal.outerLeft, roiLeftG, roiTopG)
+        val outerRightPolyG = localPolylineToGlobal3250(sideArcLocal.outerRight, roiLeftG, roiTopG)
 
         val winnerNasalInnerLocal = winnerNasalInnerPoly.map { (x, y) ->
             PointF(x.toFloat(), y.toFloat())
@@ -920,18 +900,61 @@ object RimDetectorBlock3250 {
             PointF(x.toFloat(), y.toFloat())
         }
 
-        val nasalInnerLocal =
+        val sideNasalRaw =
+            if (nasalAtLeft) sideArcLocal.innerLeft else sideArcLocal.innerRight
+        val sideTempleRaw =
+            if (nasalAtLeft) sideArcLocal.innerRight else sideArcLocal.innerLeft
+
+        val nasalXRef =
+            if (nasalAtLeft) winnerLeft.toFloat() else winnerRight.toFloat()
+        val templeXRef =
+            if (nasalAtLeft) winnerRight.toFloat() else winnerLeft.toFloat()
+
+        val nasalSideSign = if (nasalAtLeft) -1 else +1
+        val templeSideSign = if (nasalAtLeft) +1 else -1
+
+        val nasalCandidateRaw =
             if (winnerIsPartial && winnerNasalInnerLocal.isNotEmpty()) {
                 winnerNasalInnerLocal
             } else {
-                if (nasalAtLeft) innerLeftLocal else innerRightLocal
+                sideNasalRaw
             }
 
-        val templeInnerLocal =
+        val templeCandidateRaw =
             if (winnerIsPartial && winnerTempleInnerLocal.isNotEmpty()) {
                 winnerTempleInnerLocal
             } else {
-                if (nasalAtLeft) innerRightLocal else innerLeftLocal
+                sideTempleRaw
+            }
+
+        val nasalInnerLocalPrimary = keepPolylineNearXRef3250(
+            pts = nasalCandidateRaw,
+            xRef = nasalXRef,
+            sideSign = nasalSideSign
+        )
+
+        val templeInnerLocalPrimary = keepPolylineNearXRef3250(
+            pts = templeCandidateRaw,
+            xRef = templeXRef,
+            sideSign = templeSideSign
+        )
+
+        val nasalInnerLocal =
+            nasalInnerLocalPrimary.ifEmpty {
+                keepPolylineNearXRef3250(
+                    pts = sideNasalRaw,
+                    xRef = nasalXRef,
+                    sideSign = nasalSideSign
+                )
+            }
+
+        val templeInnerLocal =
+            templeInnerLocalPrimary.ifEmpty {
+                keepPolylineNearXRef3250(
+                    pts = sideTempleRaw,
+                    xRef = templeXRef,
+                    sideSign = templeSideSign
+                )
             }
 
         val nasalInnerPolyG = localPolylineToGlobal3250(nasalInnerLocal, roiLeftG, roiTopG)
@@ -971,7 +994,12 @@ object RimDetectorBlock3250 {
                 null
             }
         val hasInnerLateralsForGate =
-            !nasalInnerPolyG.isNullOrEmpty() && !templeInnerPolyG.isNullOrEmpty()
+            if (!winnerIsPartial) {
+                val winnerInnerW = winnerRight - winnerLeft
+                winnerRight > winnerLeft && winnerInnerW >= 60
+            } else {
+                !nasalInnerPolyG.isNullOrEmpty() && !templeInnerPolyG.isNullOrEmpty()
+            }
 
         val gateResult3250 = applyProfileGate3250(
             RimGateInput3250(
@@ -979,8 +1007,7 @@ object RimDetectorBlock3250 {
                 baseConfidence = winnerConfRaw,
                 isPartial = winnerIsPartial,
                 hasInnerLaterals = hasInnerLateralsForGate,
-                hasOuterLaterals = !nasalOuterPolyG.isNullOrEmpty() && !templeOuterPolyG.isNullOrEmpty(),
-                topObservedY = winnerTopObservedY,
+                hasOuterLaterals = !nasalOuterPolyG.isNullOrEmpty() || !templeOuterPolyG.isNullOrEmpty(),                topObservedY = winnerTopObservedY,
                 topUsedY = winnerTop,
                 bottomUsedY = winnerBottom,
                 expHGuessPx = winnerExpHGuessPx,
