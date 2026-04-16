@@ -5,6 +5,16 @@ import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
 
+data class InnerWallsResult3250(
+    val a: Int,
+    val b: Int,
+    val hitsL: Int,
+    val hitsR: Int,
+    val topAtA: Int?,
+    val bottomAtA: Int?,
+    val topAtB: Int?,
+    val bottomAtB: Int?
+)
     internal fun verticalSupportAt3250(
         edgesU8: ByteArray,
         dirU8: ByteArray?,
@@ -84,7 +94,7 @@ internal fun findInnerWallsAtY3250(
     minDist: Int,
     maxDist: Int,
     profile3250: RimProfile3250
-): Pair<Int, Int>? {
+): InnerWallsResult3250? {
     val ys = ArrayList<Int>(2 * bandHalf + 1)
     for (dy in -bandHalf..bandHalf) {
         ys.add((yRef + dy).coerceIn(0, h - 1))
@@ -105,6 +115,29 @@ internal fun findInnerWallsAtY3250(
         RimProfile3250.FULL_RIM -> 6
         RimProfile3250.RANURADO -> 5
         RimProfile3250.PERFORADO -> 4
+    }
+
+    fun isValidInnerAt(x: Int, y: Int): Boolean {
+        if (x !in 0 until w || y !in 0 until h) return false
+
+        val idx = y * w + x
+        if (isMaskedPx3250(maskU8, idx)) return false
+        if ((edgesU8[idx].toInt() and 0xFF) == 0) return false
+
+        val support = verticalSupportAt3250(
+            edgesU8 = edgesU8,
+            dirU8 = dirU8,
+            maskU8 = maskU8,
+            w = w,
+            h = h,
+            x = x,
+            y = y,
+            halfY = 2
+        )
+        if (support < minSupportInner) return false
+
+        val d = if (dirU8 == null) 255 else (dirU8[idx].toInt() and 0xFF)
+        return isVertEdgeDir3250(d)
     }
 
     fun scanInner(dx: Int, y: Int): Int? {
@@ -178,6 +211,90 @@ internal fun findInnerWallsAtY3250(
         return bestX.takeIf { it >= 0 }
     }
 
+    fun countSupportHitsAtX(x: Int): Int {
+        var hits = 0
+        val y0h = (yRef - bandHalf).coerceIn(0, h - 1)
+        val y1h = (yRef + bandHalf).coerceIn(0, h - 1)
+
+        for (yy in y0h..y1h) {
+            if (isValidInnerAt(x, yy)) hits++
+        }
+
+        return hits
+    }
+
+    fun rowHasSupportNearX(xCenter: Int, y: Int): Boolean {
+        val x0 = (xCenter - 2).coerceIn(0, w - 1)
+        val x1 = (xCenter + 2).coerceIn(0, w - 1)
+
+        var hits = 0
+        for (xx in x0..x1) {
+            if (isValidInnerAt(xx, y)) hits++
+        }
+
+        return hits > 0
+    }
+
+    fun observeVerticalRunAtX(xCenter: Int): IntRange? {
+        val rows = ArrayList<Int>()
+
+        for (y in 0 until h) {
+            if (rowHasSupportNearX(xCenter, y)) rows.add(y)
+        }
+
+        if (rows.isEmpty()) return null
+
+        var bestStart = rows[0]
+        var bestEnd = rows[0]
+        var bestCount = 1
+        var bestContainsRef = yRef in bestStart..bestEnd
+        var bestDist =
+            if (bestContainsRef) 0 else minOf(abs(yRef - bestStart), abs(yRef - bestEnd))
+
+        var curStart = rows[0]
+        var curEnd = rows[0]
+        var curCount = 1
+
+        fun commitCurrent() {
+            val containsRef = yRef in curStart..curEnd
+            val dist =
+                if (containsRef) 0 else minOf(abs(yRef - curStart), abs(yRef - curEnd))
+
+            val better =
+                when {
+                    containsRef && !bestContainsRef -> true
+                    containsRef == bestContainsRef && curCount > bestCount -> true
+                    containsRef == bestContainsRef && curCount == bestCount && dist < bestDist -> true
+                    else -> false
+                }
+
+            if (better) {
+                bestStart = curStart
+                bestEnd = curEnd
+                bestCount = curCount
+                bestContainsRef = containsRef
+                bestDist = dist
+            }
+        }
+
+        for (i in 1 until rows.size) {
+            val y = rows[i]
+            if (y - curEnd <= 2) {
+                curEnd = y
+                curCount++
+            } else {
+                commitCurrent()
+                curStart = y
+                curEnd = y
+                curCount = 1
+            }
+        }
+
+        commitCurrent()
+
+        return bestStart..bestEnd
+    }
+
     for (y in ys) {
         scanInner(dx = -1, y = y)?.let { leftHits.add(it) }
         scanInner(dx = +1, y = y)?.let { rightHits.add(it) }
@@ -191,7 +308,19 @@ internal fun findInnerWallsAtY3250(
     if (left >= right) return null
     if (abs(right - left) < 40) return null
 
-    return left to right
+    val runA = observeVerticalRunAtX(left)
+    val runB = observeVerticalRunAtX(right)
+
+    return InnerWallsResult3250(
+        a = left,
+        b = right,
+        hitsL = countSupportHitsAtX(left),
+        hitsR = countSupportHitsAtX(right),
+        topAtA = runA?.first,
+        bottomAtA = runA?.last,
+        topAtB = runB?.first,
+        bottomAtB = runB?.last
+    )
 }
 internal fun searchNearestInnerAroundPrevX3250(
     edgesU8: ByteArray,

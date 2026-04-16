@@ -45,6 +45,8 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import kotlin.math.abs
+import kotlin.math.ceil
+import kotlin.math.hypot
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
@@ -75,7 +77,9 @@ object DnpFacePipeline3250 {
         val pRight: PointF?,
         val browLeftBottomYpx: Float?,
         val browRightBottomYpx: Float?,
-        val eyeEllipsesGlobal3250: List<EyeEllipseMask3250>? = null
+        val eyeEllipsesGlobal3250: List<EyeEllipseMask3250>? = null,
+        val browLeftPts3250: List<PointF>? = null,
+        val browRightPts3250: List<PointF>? = null
     )
 
     data class BoxesPack3250(
@@ -410,13 +414,14 @@ object DnpFacePipeline3250 {
                     blurK3250 = 3,
                     scorePercentile3250 = 95.0,
                     scoreMinFrac3250 = 0.12,
-                    cannyLowFrac3250 = 0.55,
-                    cannyHighFrac3250 = 1.00,
+                    cannyHighPercentile3250 = 92.0,
+                    cannyLowFrac3250 = 0.45,
+                    cannyIgnoreZeros3250 = true,
                     closeRadius3250 = 1,
                     bridgeGapPx3250 = 5,
                     bridgeMinRunPx3250 = 2,
                     dilateIters3250 = 1,
-                    debugSaveToGallery3250 = saveEdgeArcfitDebugToGallery3250
+                    debugSaveToGallery3250 = true
                 ),
                 debugTag3250 = "OD",
                 filGeometryPtsGlobal3250 = packOd?.polylineGlobal3250
@@ -438,13 +443,14 @@ object DnpFacePipeline3250 {
                     blurK3250 = 3,
                     scorePercentile3250 = 95.0,
                     scoreMinFrac3250 = 0.12,
-                    cannyLowFrac3250 = 0.55,
-                    cannyHighFrac3250 = 1.00,
+                    cannyHighPercentile3250 = 92.0,
+                    cannyLowFrac3250 = 0.45,
+                    cannyIgnoreZeros3250 = true,
                     closeRadius3250 = 1,
                     bridgeGapPx3250 = 5,
                     bridgeMinRunPx3250 = 2,
                     dilateIters3250 = 1,
-                    debugSaveToGallery3250 = saveEdgeArcfitDebugToGallery3250
+                    debugSaveToGallery3250 = true
                 ),
                 debugTag3250 = "OI",
                 filGeometryPtsGlobal3250 = packOi?.polylineGlobal3250
@@ -1139,10 +1145,9 @@ object DnpFacePipeline3250 {
         iris: IrisPack3250,
     ): ByteArray? {
         if (!iris.ok) return null
+
         val pL = iris.pLeft
         val pR = iris.pRight
-
-        // Si no tengo al menos centros de iris, no invento.
         if (pL == null || pR == null) return null
 
         val mask = ByteArray(w * h)
@@ -1160,12 +1165,12 @@ object DnpFacePipeline3250 {
             val invRy2 = 1f / (ry * ry)
 
             for (yy in y0..y1) {
-                val dy = (yy - cy)
+                val dy = yy - cy
                 val dy2 = dy * dy * invRy2
                 val off = yy * w
                 for (xx in x0..x1) {
-                    val dx = (xx - cx)
-                    val v = (dx * dx) * invRx2 + dy2
+                    val dx = xx - cx
+                    val v = dx * dx * invRx2 + dy2
                     if (v <= 1f) mask[off + xx] = MASK_ON
                 }
             }
@@ -1187,7 +1192,8 @@ object DnpFacePipeline3250 {
                         var xx = x0
                         while (xx <= x1) {
                             if (src[off + xx].toInt() != 0) {
-                                hit = true; break
+                                hit = true
+                                break
                             }
                             xx++
                         }
@@ -1197,11 +1203,51 @@ object DnpFacePipeline3250 {
                 }
             }
         }
-        // Tamaños ROBUSTOS basados en distancia entre iris (px)
-        val d = abs(pR.x - pL.x).coerceIn(40f, (w * 0.90f))
-        val rxBase = (0.25f * d).coerceIn(40f, w * 0.26f)     // ↑ un poco
-        var ryBase = (0.19f * d).coerceIn(30f, h * 0.22f)     // ↑ un poco
-        // anti “tapa media imagen”
+
+        fun stampAlongSegment(
+            a: PointF,
+            b: PointF,
+            rx: Float,
+            ry: Float,
+            stepPx: Float
+        ) {
+            val dx = b.x - a.x
+            val dy = b.y - a.y
+            val len = hypot(dx.toDouble(), dy.toDouble()).toFloat()
+
+            if (!len.isFinite() || len <= 0.5f) {
+                fillEllipse(a.x, a.y, rx, ry)
+                return
+            }
+
+            val steps = max(1, ceil(len / max(1f, stepPx)).toInt())
+            for (i in 0..steps) {
+                val t = i.toFloat() / steps.toFloat()
+                val x = a.x + dx * t
+                val y = a.y + dy * t
+                fillEllipse(x, y, rx, ry)
+            }
+        }
+
+        fun addPolylineMask(
+            pts: List<PointF>?,
+            rx: Float,
+            ry: Float,
+            stepPx: Float
+        ) {
+            if (pts == null || pts.size < 2) return
+
+            for (i in 0 until pts.lastIndex) {
+                val a = pts[i]
+                val b = pts[i + 1]
+                if (!a.x.isFinite() || !a.y.isFinite() || !b.x.isFinite() || !b.y.isFinite()) continue
+                stampAlongSegment(a, b, rx, ry, stepPx)
+            }
+        }
+
+        val d = abs(pR.x - pL.x).coerceIn(40f, w * 0.90f)
+        val rxBase = (0.25f * d).coerceIn(40f, w * 0.26f)
+        var ryBase = (0.19f * d).coerceIn(30f, h * 0.22f)
         ryBase = min(ryBase, 0.88f * rxBase)
 
         fun addEyeMask(c: PointF) {
@@ -1215,11 +1261,16 @@ object DnpFacePipeline3250 {
             fillEllipse(cx, cy2, rx, ry)
         }
 
-
         addEyeMask(pL)
         addEyeMask(pR)
 
-        // un poquito más grande (sin pasarte)
+        val browRx = (0.09f * d).coerceIn(6f, 18f)
+        val browRy = (0.06f * d).coerceIn(5f, 14f)
+        val browStep = (0.05f * d).coerceIn(3f, 8f)
+
+        addPolylineMask(iris.browLeftPts3250, browRx, browRy, browStep)
+        addPolylineMask(iris.browRightPts3250, browRx, browRy, browStep)
+
         dilate(radius = 3)
 
         return mask

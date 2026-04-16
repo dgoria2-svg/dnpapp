@@ -50,14 +50,16 @@ object EdgeMapBuilder3250 {
         val blurK3250: Int = 3,
         val scharrWeight3250: Double = 1.0,
         val hvSuppressCross3250: Double = 0.60,
-        val cannyLowFrac3250: Double = 0.55,
         val cannyHighFrac3250: Double = 1.00,
-        val scorePercentile3250: Double = 95.0,
-        val scoreMinFrac3250: Double = 0.12,
+        val scorePercentile3250: Double = 99.0,
+        val scoreMinFrac3250: Double = 0.20,
         val closeRadius3250: Int = 1,
         val dilateIters3250: Int = 1,
         val bridgeGapPx3250: Int = 5,
         val bridgeMinRunPx3250: Int = 2,
+        val cannyIgnoreZeros3250: Boolean = true,
+        val cannyHighPercentile3250: Double = 99.0,
+        val cannyLowFrac3250: Double = 0.50,
         val debugSaveToGallery3250: Boolean = false
     )
     fun buildRoiEdgePackFromBitmap3250(
@@ -160,8 +162,13 @@ object EdgeMapBuilder3250 {
         val scoreBin = Mat(score.rows(), score.cols(), CvType.CV_8UC1)
         Imgproc.threshold(score, scoreBin, scoreThr.toDouble(), 255.0, Imgproc.THRESH_BINARY)
 
-        val cannyHigh = max(10.0, scoreThr * params3250.cannyHighFrac3250)
-        val cannyLow = max(5.0, cannyHigh * params3250.cannyLowFrac3250)
+        val cannyHigh = computePercentileU83250(
+            valuesU83250 = scoreU8,
+            percentile3250 = params3250.cannyHighPercentile3250,
+            ignoreZeros3250 = params3250.cannyIgnoreZeros3250
+        ).coerceAtLeast(10.0)
+
+        val cannyLow = (cannyHigh * params3250.cannyLowFrac3250).coerceAtLeast(5.0)
 
         val canny = Mat()
         Imgproc.Canny(blur, canny, cannyLow, cannyHigh, 3, false)
@@ -575,4 +582,33 @@ object EdgeMapBuilder3250 {
             }
         }
     }
+    private fun computePercentileU83250(
+        valuesU83250: ByteArray,
+        percentile3250: Double,
+        ignoreZeros3250: Boolean
+    ): Double {
+        val hist = IntArray(256)
+        var total = 0
+
+        for (b in valuesU83250) {
+            val v = b.toInt() and 0xFF
+            if (ignoreZeros3250 && v == 0) continue
+            hist[v]++
+            total++
+        }
+
+        if (total <= 0) return 0.0
+
+        val p = percentile3250.coerceIn(0.0, 100.0)
+        val target = kotlin.math.ceil(total * (p / 100.0)).toInt().coerceAtLeast(1)
+
+        var acc = 0
+        for (v in 0..255) {
+            acc += hist[v]
+            if (acc >= target) return v.toDouble()
+        }
+
+        return 255.0
+    }
+
 }

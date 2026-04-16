@@ -27,23 +27,17 @@ data class DnpMeasurementResult3250(
     val pxPerMmUsed3250: Float?,
     val landmarksCount: Int,
     val timestampMs: Long,
-
     val noseTipPx: PointF? = null,
     val mouthCenterPx: PointF? = null,
     val midlineXpx: Float? = null,
-
     val midlineApx: PointF? = null,
     val midlineBpx: PointF? = null,
-
-    // borde inferior de la ceja (px, coords imagen)
     val leftBrowBottomYpx: Float? = null,
     val rightBrowBottomYpx: Float? = null,
-
-    // polys (hulls) globales legacy/debug
     val maskPolysGlobal3250: List<List<PointF>>? = null,
-
-    // ✅ ojos como elipses (global px) para kill/flatten pre-edge
-    val eyeEllipsesGlobal3250: List<EyeEllipseMask3250>? = null
+    val eyeEllipsesGlobal3250: List<EyeEllipseMask3250>? = null,
+    val leftBrowPtsPx3250: List<PointF>? = null,
+    val rightBrowPtsPx3250: List<PointF>? = null
 )
 
 class IrisDnpLandmarker3250(
@@ -156,6 +150,12 @@ class IrisDnpLandmarker3250(
         val distPxH = abs(rightIrisPx.x - leftIrisPx.x)
         val irisY = (leftIrisPx.y + rightIrisPx.y) * 0.5f
 
+        fun browBottom(indices: IntArray): Float =
+            indices.maxOf { landmarks[it].y() * h }
+
+        fun browCenterX(indices: IntArray): Float =
+            indices.map { landmarks[it].x() }.average().toFloat() * w
+
         // ---------- NARIZ / BOCA -> MIDLINE ----------
         var noseTipPx: PointF? = null
         var mouthCenterPx: PointF? = null
@@ -222,11 +222,19 @@ class IrisDnpLandmarker3250(
         }
 
         // ---------- CEJAS ----------
-        fun browBottom(indices: IntArray): Float =
-            indices.maxOf { landmarks[it].y() * h }
+        val leftBrowPts = ptsPxFromIdx3250(landmarks, LEFT_BROW, w, h)
+        val rightBrowPts = ptsPxFromIdx3250(landmarks, RIGHT_BROW, w, h)
 
-        fun browCenterX(indices: IntArray): Float =
-            indices.map { landmarks[it].x() }.average().toFloat() * w
+        val browLeftPtsOrdered: List<PointF>
+        val browRightPtsOrdered: List<PointF>
+
+        if (browCenterX(LEFT_BROW) <= browCenterX(RIGHT_BROW)) {
+            browLeftPtsOrdered = leftBrowPts
+            browRightPtsOrdered = rightBrowPts
+        } else {
+            browLeftPtsOrdered = rightBrowPts
+            browRightPtsOrdered = leftBrowPts
+        }
 
         var lb = browBottom(LEFT_BROW)
         var rb = browBottom(RIGHT_BROW)
@@ -269,7 +277,9 @@ class IrisDnpLandmarker3250(
             eyeEllipsesGlobal3250 = eyes,
             maskPolysGlobal3250 = maskPolys,
             leftBrowBottomYpx = leftBrow,
-            rightBrowBottomYpx = rightBrow
+            rightBrowBottomYpx = rightBrow,
+            leftBrowPtsPx3250 = browLeftPtsOrdered,
+            rightBrowPtsPx3250 = browRightPtsOrdered
         )
     }
 
@@ -420,5 +430,16 @@ class IrisDnpLandmarker3250(
             ellipseFrom(LEFT_EYE),
             ellipseFrom(RIGHT_EYE)
         )
+    }
+    private fun ptsPxFromIdx3250(
+        landmarks: List<NormalizedLandmark>,
+        indices: IntArray,
+        w: Float,
+        h: Float
+    ): List<PointF> {
+        return indices.map { i ->
+            val lm = landmarks[i]
+            PointF(lm.x() * w, lm.y() * h)
+        }
     }
 }
