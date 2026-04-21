@@ -491,128 +491,121 @@ internal fun searchOuterFromInner3250(
 
     return null
 }
+internal fun collectBottomCandidatesInWindow3250(
+    edgesU8: ByteArray,
+    dirU8: ByteArray?,
+    maskU8: ByteArray?,
+    hScoreU8: ByteArray?,
+    w: Int,
+    x: Int,
+    y0: Int,
+    y1: Int,
+    expectedY: Int?
+): List<BottomCand3250> {
+    val h = edgesU8.size / w
+    if (h <= 0) return emptyList()
 
-    internal fun collectBottomCandidatesInWindow3250(
-        edgesU8: ByteArray,
-        dirU8: ByteArray?,
-        maskU8: ByteArray?,
-        hScoreU8: ByteArray?,
-        w: Int,
-        x: Int,
-        y0: Int,
-        y1: Int,
-        expectedY: Int
-    ): List<BottomCand3250> {
-        val h = edgesU8.size / w
-        if (h <= 0) return emptyList()
+    val lo = min(y0, y1).coerceIn(0, h - 1)
+    val hi = max(y0, y1).coerceIn(0, h - 1)
 
-        val lo = min(y0, y1).coerceIn(0, h - 1)
-        val hi = max(y0, y1).coerceIn(0, h - 1)
+    val raw = ArrayList<BottomCand3250>()
 
-        val raw = ArrayList<BottomCand3250>()
+    for (y in lo..hi) {
+        val idx = y * w + x
+        val e = edgesU8[idx].toInt() and 0xFF
+        if (e == 0) continue
+        if (isMasked3250(maskU8, idx)) continue
 
-        for (y in lo..hi) {
-            val idx = y * w + x
-            val e = edgesU8[idx].toInt() and 0xFF
-            if (e == 0) continue
-            if (isMasked3250(maskU8, idx)) continue
+        val d = if (dirU8 == null) 255 else (dirU8[idx].toInt() and 0xFF)
+        val dirScore = when {
+            dirU8 == null -> 100
+            isHorzEdgeDir3250(d) -> 100
+            else -> 45
+        }
 
-            val d = if (dirU8 == null) 255 else (dirU8[idx].toInt() and 0xFF)
-            val dirScore = when {
-                dirU8 == null -> 100
-                isHorzEdgeDir3250(d) -> 100
-                else -> 45
-            }
+        val support = horizontalSupportAt3250(
+            edgesU8 = edgesU8,
+            dirU8 = dirU8,
+            maskU8 = maskU8,
+            w = w,
+            h = h,
+            x = x,
+            y = y,
+            halfX = 2,
+            halfY = 1
+        )
+        if (support <= 0) continue
+        val hScore = if (hScoreU8 != null && hScoreU8.size == w * h) {
+            hScoreU8[idx].toInt() and 0xFF
+        } else {
+            0
+        }
 
-            val support = horizontalSupportAt3250(
-                edgesU8 = edgesU8,
-                dirU8 = dirU8,
-                maskU8 = maskU8,
-                w = w,
-                h = h,
-                x = x,
+        val expectedPenalty =
+            if (expectedY != null) abs(y - expectedY) * 8 else 0
+
+        val score =
+            support * 100 +
+                    dirScore +
+                    hScore * 2 -
+                    expectedPenalty
+
+        raw.add(
+            BottomCand3250(
                 y = y,
-                halfX = 2,
-                halfY = 1
+                score = score,
+                support = support,
+                dirScore = dirScore
             )
-            if (support <= 0) continue
-
-            val hScore = if (hScoreU8 != null && hScoreU8.size == w * h) {
-                hScoreU8[idx].toInt() and 0xFF
-            } else {
-                0
-            }
-
-            val score =
-                support * 100 +
-                        dirScore +
-                        hScore * 2 -
-                        abs(y - expectedY) * 8
-            raw.add(
-                BottomCand3250(
-                    y = y,
-                    score = score,
-                    support = support,
-                    dirScore = dirScore
-                )
-            )
-        }
-
-        if (raw.isEmpty()) return emptyList()
-
-        val grouped = ArrayList<BottomCand3250>()
-        var i = 0
-        while (i < raw.size) {
-            var best = raw[i]
-            var j = i + 1
-            while (j < raw.size && raw[j].y - raw[j - 1].y <= 2) {
-                if (raw[j].score > best.score) best = raw[j]
-                j++
-            }
-            grouped.add(best)
-            i = j
-        }
-
-        return grouped.sortedBy { it.y }
+        )
     }
 
-    internal fun chooseSingleBottomInnerCandidate3250(
-        candidates: List<BottomCand3250>,
-        expectedY: Int,
-        profile3250: RimProfile3250
-    ): BottomCand3250? {
-        if (candidates.isEmpty()) return null
+    if (raw.isEmpty()) return emptyList()
 
-        var best: BottomCand3250? = null
-        var bestScore = Int.MIN_VALUE
-
-
-        for (c in candidates) {
-            val belowPenalty = when (profile3250) {
-                RimProfile3250.FULL_RIM -> max(0, c.y - expectedY) * 16
-                RimProfile3250.RANURADO -> max(0, c.y - expectedY) * 10
-                RimProfile3250.PERFORADO -> max(0, c.y - expectedY) * 6
-            }
-
-            val dyPenalty = abs(c.y - expectedY) * 12
-            val dirBonus = if (c.dirScore >= 100) 40 else 0
-            val supportBonus = c.support * 12
-
-            val finalScore =
-                c.score +
-                        dirBonus +
-                        supportBonus -
-                        dyPenalty -
-                        belowPenalty
-
-            if (finalScore > bestScore) {
-                bestScore = finalScore
-                best = c
-            }
+    val grouped = ArrayList<BottomCand3250>()
+    var i = 0
+    while (i < raw.size) {
+        var best = raw[i]
+        var j = i + 1
+        while (j < raw.size && raw[j].y - raw[j - 1].y <= 2) {
+            if (raw[j].score > best.score) best = raw[j]
+            j++
         }
-
-        return best
+        grouped.add(best)
+        i = j
     }
+
+    return grouped.sortedBy { it.y }
+}
+
+internal fun chooseSingleBottomInnerCandidate3250(
+    candidates: List<BottomCand3250>,
+    expectedY: Int?,
+    profile3250: RimProfile3250
+): BottomCand3250? {
+    if (candidates.isEmpty()) return null
+
+    var best: BottomCand3250? = null
+    var bestScore = Int.MIN_VALUE
+
+    for (c in candidates) {
+        val dirBonus = if (c.dirScore >= 100) 40 else 0
+        val supportBonus = c.support * 12
+
+        val finalScore =
+            c.score +
+                    dirBonus +
+                    supportBonus
+
+        if (finalScore > bestScore) {
+            bestScore = finalScore
+            best = c
+        }
+    }
+
+    return best
+}
+
 internal fun findBestBottomEdgeInWindow3250(
     edgesU8: ByteArray,
     dirU8: ByteArray?,
@@ -623,7 +616,7 @@ internal fun findBestBottomEdgeInWindow3250(
     b: Int,
     y0: Int,
     y1: Int,
-    expectedY: Int,
+    expectedY: Int?,
     profile3250: RimProfile3250,
     minOuterGapPx: Int = 0,
     maxOuterGapPx: Int = 0
@@ -673,10 +666,6 @@ internal fun findBestBottomEdgeInWindow3250(
                     val gap = outer.y - inner.y
                     if (gap !in minOuterGapPx..maxOuterGapPx) continue
 
-                    val expectedPenalty =
-                        abs(inner.y - expectedY) * 14 +
-                                max(0, inner.y - expectedY) * 18
-
                     val gapPenalty =
                         abs(gap.toFloat() - gapTarget).roundToInt() * 4
 
@@ -687,7 +676,6 @@ internal fun findBestBottomEdgeInWindow3250(
                                 outer.support * 8 +
                                 (if (inner.dirScore >= 100) 50 else 0) +
                                 (if (outer.dirScore >= 100) 20 else 0) -
-                                expectedPenalty -
                                 gapPenalty
 
                     if (pairScore > bestScoreLocal) {
@@ -775,8 +763,7 @@ internal fun findBestBottomEdgeInWindow3250(
             bestRun * 10000 +
                     g.xs.size * 2000 +
                     density * 50 +
-                    g.scoreSum -
-                    abs(yMed - expectedY) * 8
+                    g.scoreSum
 
         if (groupScore > bestGroupScore) {
             bestGroupScore = groupScore
@@ -786,16 +773,17 @@ internal fun findBestBottomEdgeInWindow3250(
 
     return bestY
 }
+
 internal fun collectTopCandidatesInWindow3250(
     edgesU8: ByteArray,
     dirU8: ByteArray?,
     maskU8: ByteArray?,
-    hScoreU8: ByteArray? = null,
+    hScoreU8: ByteArray?,
     w: Int,
     x: Int,
     y0: Int,
     y1: Int,
-    expectedY: Int
+    expectedY: Int?
 ): List<TopCand3250> {
     val h = edgesU8.size / w
     if (h <= 0) return emptyList()
@@ -837,11 +825,14 @@ internal fun collectTopCandidatesInWindow3250(
             0
         }
 
+        val expectedPenalty =
+            if (expectedY != null) abs(y - expectedY) * 8 else 0
+
         val score =
             support * 100 +
                     dirScore +
                     hScore * 2 -
-                    abs(y - expectedY) * 8
+                    expectedPenalty
 
         raw.add(
             TopCand3250(
@@ -872,7 +863,7 @@ internal fun collectTopCandidatesInWindow3250(
 }
 internal fun chooseSingleTopInnerCandidate3250(
     candidates: List<TopCand3250>,
-    expectedY: Int,
+    expectedY: Int?,
     profile3250: RimProfile3250
 ): TopCand3250? {
     if (candidates.isEmpty()) return null
@@ -881,21 +872,13 @@ internal fun chooseSingleTopInnerCandidate3250(
     var bestScore = Int.MIN_VALUE
 
     for (c in candidates) {
-        val belowPenalty = when (profile3250) {
-            RimProfile3250.FULL_RIM -> max(0, c.y - expectedY) * 16
-            RimProfile3250.RANURADO -> max(0, c.y - expectedY) * 10
-            RimProfile3250.PERFORADO -> max(0, c.y - expectedY) * 6
-        }
-        val dyPenalty = abs(c.y - expectedY) * 12
         val dirBonus = if (c.dirScore >= 100) 40 else 0
         val supportBonus = c.support * 12
 
         val finalScore =
             c.score +
                     dirBonus +
-                    supportBonus -
-                    dyPenalty -
-                    belowPenalty
+                    supportBonus
 
         if (finalScore > bestScore) {
             bestScore = finalScore
@@ -909,14 +892,16 @@ internal fun findBestTopEdgeInWindow3250(
     edgesU8: ByteArray,
     dirU8: ByteArray?,
     maskU8: ByteArray?,
-    hScoreU8: ByteArray? = null,
+    hScoreU8: ByteArray?,
     w: Int,
     a: Int,
     b: Int,
     y0: Int,
     y1: Int,
-    expectedY: Int,
-    profile3250: RimProfile3250
+    expectedY: Int?,
+    profile3250: RimProfile3250,
+    minOuterGapPx: Int = 0,
+    maxOuterGapPx: Int = 0
 ): Int {
     if (w <= 0) return -1
 
@@ -933,7 +918,7 @@ internal fun findBestTopEdgeInWindow3250(
     val hits = ArrayList<Hit>()
 
     for (xx in xl..xr) {
-        val candidates = collectTopCandidatesInWindow3250(
+        val candidates: List<TopCand3250> = collectTopCandidatesInWindow3250(
             edgesU8 = edgesU8,
             dirU8 = dirU8,
             maskU8 = maskU8,
@@ -946,18 +931,62 @@ internal fun findBestTopEdgeInWindow3250(
         )
         if (candidates.isEmpty()) continue
 
-        val best = chooseSingleTopInnerCandidate3250(
-            candidates = candidates,
-            profile3250 = profile3250,
-            expectedY = expectedY
-        ) ?: continue
+        var bestYLocal = -1
+        var bestScoreLocal = Int.MIN_VALUE
 
-        val finalScore =
-            best.score +
-                    (if (best.dirScore >= 100) 40 else 0) +
-                    best.support * 12
+        if (
+            profile3250 == RimProfile3250.FULL_RIM &&
+            minOuterGapPx > 0 &&
+            maxOuterGapPx >= minOuterGapPx
+        ) {
+            val gapTarget = ((minOuterGapPx + maxOuterGapPx) * 0.5f)
 
-        hits.add(Hit(xx, best.y, finalScore))
+            for (i in candidates.indices) {
+                val outer = candidates[i]
+                for (j in i + 1 until candidates.size) {
+                    val inner = candidates[j]
+                    val gap = inner.y - outer.y
+                    if (gap !in minOuterGapPx..maxOuterGapPx) continue
+
+                    val gapPenalty =
+                        abs(gap.toFloat() - gapTarget).roundToInt() * 4
+
+                    val pairScore =
+                        inner.score +
+                                (outer.score / 2) +
+                                inner.support * 16 +
+                                outer.support * 8 +
+                                (if (inner.dirScore >= 100) 50 else 0) +
+                                (if (outer.dirScore >= 100) 20 else 0) -
+                                gapPenalty
+
+                    if (pairScore > bestScoreLocal) {
+                        bestScoreLocal = pairScore
+                        bestYLocal = inner.y
+                    }
+                }
+            }
+        }
+
+        if (bestYLocal < 0) {
+            val bestSingle = chooseSingleTopInnerCandidate3250(
+                candidates = candidates,
+                expectedY = expectedY,
+                profile3250 = profile3250
+            )
+
+            if (bestSingle != null) {
+                bestYLocal = bestSingle.y
+                bestScoreLocal =
+                    bestSingle.score +
+                            (if (bestSingle.dirScore >= 100) 40 else 0) +
+                            bestSingle.support * 12
+            }
+        }
+
+        if (bestYLocal >= 0) {
+            hits.add(Hit(xx, bestYLocal, bestScoreLocal))
+        }
     }
 
     if (hits.isEmpty()) return -1
@@ -1010,14 +1039,15 @@ internal fun findBestTopEdgeInWindow3250(
         }
 
         val yMed = medianInt3250(g.ys)
+        val yTop = g.ys.minOrNull() ?: yMed
         val density = (g.xs.size * 100) / max(1, xr - xl + 1)
 
         val groupScore =
-            bestRun * 10000 +
-                    g.xs.size * 2000 +
-                    density * 50 +
+            bestRun * 3000 +
+                    g.xs.size * 600 +
+                    density * 20 +
                     g.scoreSum -
-                    abs(yMed - expectedY) * 8
+                    yTop * 150
 
         if (groupScore > bestGroupScore) {
             bestGroupScore = groupScore

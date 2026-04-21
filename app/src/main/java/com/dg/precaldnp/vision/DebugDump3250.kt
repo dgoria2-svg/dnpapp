@@ -89,6 +89,7 @@ object DebugDump3250 {
         usedPack: RimDetectPack3250?,
         debugTag: String,
         filPtsDetectorGlobal800: List<PointF>? = null,
+        guideMaskU8: ByteArray? = null,
         minIntervalMs: Long = 1200L
     ) {
         if (usedPack == null) return
@@ -96,8 +97,18 @@ object DebugDump3250 {
         val key = "RIM_DETECTOR_$debugTag"
         if (!allow(key, minIntervalMs)) return
 
-        val overlayBmp = edgeU8ToBitmap(usedPack.edges, usedPack.w, usedPack.h)
-            .copy(Bitmap.Config.ARGB_8888, true)
+        val overlayBmp =
+            if (guideMaskU8 != null && guideMaskU8.size == usedPack.w * usedPack.h) {
+                overlayMaskOnEdge3250(
+                    edgeU8 = usedPack.edges,
+                    maskU8 = guideMaskU8,
+                    w = usedPack.w,
+                    h = usedPack.h
+                ).copy(Bitmap.Config.ARGB_8888, true)
+            } else {
+                edgeU8ToBitmap(usedPack.edges, usedPack.w, usedPack.h)
+                    .copy(Bitmap.Config.ARGB_8888, true)
+            }
 
         drawRimOverlayOnEdgeBitmap(
             edgeBmp = overlayBmp,
@@ -114,7 +125,6 @@ object DebugDump3250 {
             baseName = "RIM_${debugTag}_DETECTOR_ONLY"
         )
     }
-
     /**
      * NUEVO:
      * Dump del ArcFit por separado.

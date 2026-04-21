@@ -26,6 +26,7 @@ import com.dg.precaldnp.vision.EdgeMapBuilder3250
 import com.dg.precaldnp.vision.EyeEllipseMask3250
 import com.dg.precaldnp.vision.FilContourBuilder3250
 import com.dg.precaldnp.vision.FilGeometry3250
+import com.dg.precaldnp.vision.GlassesFrontMasker3250
 import com.dg.precaldnp.vision.IrisDnpLandmarker3250
 import com.dg.precaldnp.vision.PupilFrameEngine3250
 import com.dg.precaldnp.vision.RimArcSeed3250
@@ -95,7 +96,13 @@ object DnpFacePipeline3250 {
         val estimated: Boolean,
         val src: String
     )
-
+    data class FrontMaskPack3250(
+        val workMaskFullU8: ByteArray?,
+        val rimBodyMaskFullU8: ByteArray?,
+        val innerBoundaryMaskFullU8: ByteArray?,
+        val lensInteriorMaskFullU8: ByteArray?,
+        val flattenMaskFullU8: ByteArray?
+    )
     data class RoiSrcPack3250(
         val roiOdRectF: RectF,
         val roiOiRectF: RectF,
@@ -310,6 +317,28 @@ object DnpFacePipeline3250 {
             filVboxMm = filVboxMm,
             saveRingRoiDebug = saveRingRoiDebug
         )
+        val browFrontY3250 = listOfNotNull(
+            roiSrc.browBottomOdY,
+            roiSrc.browBottomOiY
+        ).minOrNull()
+
+        val frontMaskRaw3250 = GlassesFrontMasker3250.build(
+            src = stillBmp,
+            pLeft = pm.pupilOdForRoi,
+            pRight = pm.pupilOiForRoi,
+            browBottomY = browFrontY3250,
+            growPx = 4
+        )
+
+        val fullN = stillBmp.width * stillBmp.height
+
+        val frontMasks3250 = FrontMaskPack3250(
+            workMaskFullU8 = frontMaskRaw3250.workMaskU8.takeIf { it.size == fullN },
+            rimBodyMaskFullU8 = frontMaskRaw3250.rimBodyMaskU8.takeIf { it.size == fullN },
+            innerBoundaryMaskFullU8 = frontMaskRaw3250.innerBoundaryMaskU8.takeIf { it.size == fullN },
+            lensInteriorMaskFullU8 = frontMaskRaw3250.lensInteriorMaskU8.takeIf { it.size == fullN },
+            flattenMaskFullU8 = frontMaskRaw3250.flattenMaskU8.takeIf { it.size == fullN }
+        )
 // 6) FULL edge pack UNA sola vez, pero guiado por FIL geometry
         // 6) EDGE MAP ROI-LOCAL (verdad nueva) + FULL compuesto SOLO para reusar detector actual
         val w = stillBmp.width
@@ -424,8 +453,15 @@ object DnpFacePipeline3250 {
                     debugSaveToGallery3250 = true
                 ),
                 debugTag3250 = "OD",
-                filGeometryPtsGlobal3250 = packOd?.polylineGlobal3250
+                filGeometryPtsGlobal3250 = packOd?.polylineGlobal3250,
+
+                // 👇 ACA VAN (fuera de Params)
+                workMaskFullU83250 = frontMasks3250.workMaskFullU8,
+                rimBodyMaskFullU83250 = frontMasks3250.rimBodyMaskFullU8,
+                innerBoundaryMaskFullU83250 = frontMasks3250.innerBoundaryMaskFullU8,
+                flattenMaskFullU83250 = frontMasks3250.flattenMaskFullU8
             )
+
         } catch (t: Throwable) {
             Log.e(TAG, "CHK3250 FAIL ROI EDGE OD", t)
             return recoverableMeasureOut3250(
@@ -453,7 +489,14 @@ object DnpFacePipeline3250 {
                     debugSaveToGallery3250 = true
                 ),
                 debugTag3250 = "OI",
-                filGeometryPtsGlobal3250 = packOi?.polylineGlobal3250
+                filGeometryPtsGlobal3250 = packOi?.polylineGlobal3250,
+
+                // 👇 ACA VAN (fuera de Params)
+
+                workMaskFullU83250 = frontMasks3250.workMaskFullU8,
+                rimBodyMaskFullU83250 = frontMasks3250.rimBodyMaskFullU8,
+                innerBoundaryMaskFullU83250 = frontMasks3250.innerBoundaryMaskFullU8,
+                flattenMaskFullU83250 = frontMasks3250.flattenMaskFullU8
             )
         } catch (t: Throwable) {
             Log.e(TAG, "CHK3250 FAIL ROI EDGE OI", t)
@@ -465,6 +508,7 @@ object DnpFacePipeline3250 {
 
 // Componemos FULL solo para no tocar detectFitAndRefine3250 hoy.
 // Lo que entra al detector sigue siendo EXACTAMENTE el 05_detector_input de cada ROI.
+
         val edgeFullU8 = ByteArray(nFullL.toInt())
         val hScoreFullU8 = ByteArray(nFullL.toInt())
         val vScoreFullU8 = ByteArray(nFullL.toInt())
@@ -592,7 +636,8 @@ object DnpFacePipeline3250 {
             hscorefullu83250 = hScoreFullU8,
             vscorefullu83250 = vScoreFullU8,
             dirfullu83250 = dirFullU8,
-            maskfullu83250 = maskFull3250,
+            maskFull3250 = maskFull3250,
+            frontMasks3250 = frontMasks3250,
             saveEdgeArcfitDebugToGallery3250 = saveEdgeArcfitDebugToGallery3250,
             stage = stage
                 )
@@ -1370,8 +1415,8 @@ object DnpFacePipeline3250 {
     private fun rectFToRectCoverPx3250(r: RectF, w: Int, h: Int): android.graphics.Rect {
         val l = kotlin.math.floor(r.left).toInt().coerceIn(0, w)
         val t = kotlin.math.floor(r.top).toInt().coerceIn(0, h)
-        val rr = kotlin.math.ceil(r.right).toInt().coerceIn(l, w)
-        val bb = kotlin.math.ceil(r.bottom).toInt().coerceIn(t, h)
+        val rr = ceil(r.right).toInt().coerceIn(l, w)
+        val bb = ceil(r.bottom).toInt().coerceIn(t, h)
         return android.graphics.Rect(l, t, rr, bb) // right/bottom EXCLUSIVOS
     }
 
@@ -1523,10 +1568,12 @@ object DnpFacePipeline3250 {
         hscorefullu83250: ByteArray? = null,
         vscorefullu83250: ByteArray? = null,
         dirfullu83250: ByteArray,
-        maskfullu83250: ByteArray? = null,
+        maskFull3250: ByteArray? = null,
+        frontMasks3250: FrontMaskPack3250? = null,
         saveEdgeArcfitDebugToGallery3250: Boolean = false,
         stage: StageCb3250? = null
-    ): FitPack3250 {
+    ): FitPack3250
+     {
         // ============================================================
         // FULL dims
         // ============================================================
@@ -1553,7 +1600,7 @@ object DnpFacePipeline3250 {
         // ============================================================
         // Crop canónico (una sola verdad)
         // ============================================================
-        val maskFullCanon: ByteArray? = maskfullu83250?.takeIf { it.size == nFull }
+         val maskFullCanon: ByteArray? = maskFull3250?.takeIf { it.size == nFull }
         val hScoreFullCanon: ByteArray? = hscorefullu83250?.takeIf { it.size == nFull }
         val vScoreFullCanon: ByteArray? = vscorefullu83250?.takeIf { it.size == nFull }
 
@@ -1590,6 +1637,9 @@ object DnpFacePipeline3250 {
             )
 
         val maskOdU8 = maskFullCanon?.let { cropRoiU8(it, wFull, hFull, roiOdGlobal)?.u8 }
+         val guideFullU8 = frontMasks3250?.workMaskFullU8?.takeIf { it.size == nFull }
+         val guideOdU8 = guideFullU8?.let { cropRoiU8(it, wFull, hFull, roiOdGlobal)?.u8 }
+         val guideOiU8 = guideFullU8?.let { cropRoiU8(it, wFull, hFull, roiOiGlobal)?.u8 }
 
         val oiEdges = cropRoiU8(edgemapfullu83250, wFull, hFull, roiOiGlobal)
             ?: return FitPack3250(
@@ -1654,6 +1704,7 @@ object DnpFacePipeline3250 {
             edgesU8 = edgesOdU8,
             dirU8 = dirOdU8,
             maskU8 = maskOdU8,
+            guideMaskU8 = guideOdU8,
             w = wOd,
             h = hOd,
             hScoreU8 = hScoreOdU8,
@@ -1675,6 +1726,7 @@ object DnpFacePipeline3250 {
             edgesU8 = edgesOiU8,
             dirU8 = dirOiU8,
             maskU8 = maskOiU8,
+            guideMaskU8 = guideOiU8,
             w = wOi,
             h = hOi,
             hScoreU8 = hScoreOiU8,
@@ -1910,15 +1962,18 @@ object DnpFacePipeline3250 {
         DebugDump3250.dumpRimDetectorUsed3250(
             context = ctx,
             usedPack = detOdFinal,
-            debugTag = "OD"
+            debugTag = "OD",
+            guideMaskU8 = guideOdU8
+
         )
 
         DebugDump3250.dumpRimDetectorUsed3250(
             context = ctx,
             usedPack = detOiFinal,
-            debugTag = "OI"
-        )
+            debugTag = "OI",
+            guideMaskU8 = guideOiU8
 
+        )
         fun pxFrom(
             r: RimDetectionResult?,
             profile3250: RimProfile3250
@@ -2940,5 +2995,13 @@ object DnpFacePipeline3250 {
             if (p.y > maxY) maxY = p.y
         }
         return if (maxY.isFinite()) maxY else null
+    }
+    private fun topYFromPlaced3250(pts: List<PointF>?): Float? {
+        if (pts.isNullOrEmpty()) return null
+        var minY = Float.POSITIVE_INFINITY
+        for (p in pts) {
+            if (p.y < minY) minY = p.y
+        }
+        return if (minY.isFinite()) minY else null
     }
 }

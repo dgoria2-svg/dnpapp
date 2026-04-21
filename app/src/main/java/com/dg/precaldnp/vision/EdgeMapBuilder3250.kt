@@ -19,8 +19,8 @@ import org.opencv.core.Mat
 import org.opencv.core.Point
 import org.opencv.core.Size
 import org.opencv.imgproc.Imgproc
-import java.io.OutputStream
 import java.util.Locale
+import kotlin.math.PI
 import kotlin.math.atan2
 import kotlin.math.max
 import kotlin.math.roundToInt
@@ -46,6 +46,7 @@ object EdgeMapBuilder3250 {
         val nonZeroRaw3250: Int,
         val nonZeroPost3250: Int
     )
+
     data class Params3250(
         val blurK3250: Int = 3,
         val scharrWeight3250: Double = 1.0,
@@ -62,18 +63,51 @@ object EdgeMapBuilder3250 {
         val cannyLowFrac3250: Double = 0.50,
         val debugSaveToGallery3250: Boolean = false
     )
+
     fun buildRoiEdgePackFromBitmap3250(
         ctx: Context?,
         stillBmp: Bitmap,
         roiRectGlobal3250: Rect,
         params3250: Params3250 = Params3250(),
         debugTag3250: String = "ROI",
-        filGeometryPtsGlobal3250: List<PointF>? = null
+        filGeometryPtsGlobal3250: List<PointF>? = null,
+        workMaskFullU83250: ByteArray? = null,
+        rimBodyMaskFullU83250: ByteArray? = null,
+        innerBoundaryMaskFullU83250: ByteArray? = null,
+        flattenMaskFullU83250: ByteArray? = null
     ): RoiEdgePack3250 {
         val roi = clampRect3250(roiRectGlobal3250, stillBmp.width, stillBmp.height)
         require(roi.width() > 4 && roi.height() > 4) {
             "EDGE3250: ROI invalido ${roi.width()}x${roi.height()}"
         }
+
+        val workMaskRoiU83250 = cropFullMaskToRoi3250(
+            full = workMaskFullU83250,
+            fullW = stillBmp.width,
+            fullH = stillBmp.height,
+            roi = roi
+        )
+
+        val rimBodyMaskRoiU83250 = cropFullMaskToRoi3250(
+            full = rimBodyMaskFullU83250,
+            fullW = stillBmp.width,
+            fullH = stillBmp.height,
+            roi = roi
+        )
+
+        val innerBoundaryMaskRoiU83250 = cropFullMaskToRoi3250(
+            full = innerBoundaryMaskFullU83250,
+            fullW = stillBmp.width,
+            fullH = stillBmp.height,
+            roi = roi
+        )
+
+        val flattenMaskRoiU83250 = cropFullMaskToRoi3250(
+            full = flattenMaskFullU83250,
+            fullW = stillBmp.width,
+            fullH = stillBmp.height,
+            roi = roi
+        )
 
         val roiBmp = Bitmap.createBitmap(
             stillBmp,
@@ -97,13 +131,46 @@ object EdgeMapBuilder3250 {
         val gray = Mat()
         Imgproc.cvtColor(bgr, gray, Imgproc.COLOR_BGR2GRAY)
 
-        val blur = Mat()
-        val blurK = ensureOdd3250(max(1, params3250.blurK3250))
-        if (blurK > 1) {
-            Imgproc.GaussianBlur(gray, blur, Size(blurK.toDouble(), blurK.toDouble()), 0.0)
+        val blurSoft = Mat()
+        val blurStrong = Mat()
+
+        val blurKSoft = ensureOdd3250(max(1, params3250.blurK3250))
+        val blurKStrong = ensureOdd3250(max(blurKSoft + 6, 11))
+
+        if (blurKSoft > 1) {
+            Imgproc.GaussianBlur(
+                gray,
+                blurSoft,
+                Size(blurKSoft.toDouble(), blurKSoft.toDouble()),
+                0.0
+            )
         } else {
-            gray.copyTo(blur)
+            gray.copyTo(blurSoft)
         }
+
+        Imgproc.GaussianBlur(
+            gray,
+            blurStrong,
+            Size(blurKStrong.toDouble(), blurKStrong.toDouble()),
+            0.0
+        )
+
+        val graySrcU83250 = matU8ToByteArray3250(gray)
+        val blurSoftU83250 = matU8ToByteArray3250(blurSoft)
+        val blurStrongU83250 = matU8ToByteArray3250(blurStrong)
+
+        val guidedGrayU83250 = buildGuidedGray3250(
+            graySrcU83250 = graySrcU83250,
+            blurSoftU83250 = blurSoftU83250,
+            blurStrongU83250 = blurStrongU83250,
+            workMaskU83250 = workMaskRoiU83250,
+            rimBodyMaskU83250 = rimBodyMaskRoiU83250,
+            innerBoundaryMaskU83250 = innerBoundaryMaskRoiU83250,
+            flattenMaskU83250 = flattenMaskRoiU83250
+        )
+
+        val blur = Mat(gray.rows(), gray.cols(), CvType.CV_8UC1)
+        blur.put(0, 0, guidedGrayU83250)
 
         val gx16 = Mat()
         val gy16 = Mat()
@@ -153,6 +220,7 @@ object EdgeMapBuilder3250 {
         val scoreU8 = matU8ToByteArray3250(score)
         val hScoreU8 = matU8ToByteArray3250(hScore)
         val vScoreU8 = matU8ToByteArray3250(vScore)
+
         val scoreThr = computeScoreThreshold3250(
             scoreU83250 = scoreU8,
             percentile3250 = params3250.scorePercentile3250,
@@ -162,12 +230,13 @@ object EdgeMapBuilder3250 {
         val scoreBin = Mat(score.rows(), score.cols(), CvType.CV_8UC1)
         Imgproc.threshold(score, scoreBin, scoreThr.toDouble(), 255.0, Imgproc.THRESH_BINARY)
 
-        val cannyHigh = computePercentileU83250(
+        val cannyHighBase = computePercentileU83250(
             valuesU83250 = scoreU8,
             percentile3250 = params3250.cannyHighPercentile3250,
             ignoreZeros3250 = params3250.cannyIgnoreZeros3250
         ).coerceAtLeast(10.0)
 
+        val cannyHigh = (cannyHighBase * params3250.cannyHighFrac3250).coerceAtLeast(10.0)
         val cannyLow = (cannyHigh * params3250.cannyLowFrac3250).coerceAtLeast(5.0)
 
         val canny = Mat()
@@ -186,7 +255,6 @@ object EdgeMapBuilder3250 {
 
         val dirU8 = buildDirMap3250(gx16, gy16)
 
-        val grayU8 = matU8ToByteArray3250(gray)
         val cannyU8 = matU8ToByteArray3250(canny)
         val edgeRawU8 = matU8ToByteArray3250(edgeRaw)
         val edgePostU8 = matU8ToByteArray3250(edgePost)
@@ -195,7 +263,7 @@ object EdgeMapBuilder3250 {
             roiRectGlobal3250 = roi,
             w3250 = roi.width(),
             h3250 = roi.height(),
-            grayU83250 = grayU8,
+            grayU83250 = graySrcU83250,
             scoreU83250 = scoreU8,
             hScoreU83250 = hScoreU8,
             vScoreU83250 = vScoreU8,
@@ -237,25 +305,29 @@ object EdgeMapBuilder3250 {
             )
         }
 
-        rgba.release()
-        bgr.release()
-        gray.release()
-        blur.release()
-        gx16.release()
-        gy16.release()
-        absGx.release()
-        absGy.release()
-        score.release()
-        scoreBin.release()
-        canny.release()
-        edgeRaw.release()
-        edgePost.release()
-        absGx32.release()
-        absGy32.release()
-        hScore32.release()
-        vScore32.release()
-        hScore.release()
-        vScore.release()
+        listOf(
+            rgba,
+            bgr,
+            gray,
+            blur,
+            gx16,
+            gy16,
+            absGx,
+            absGy,
+            score,
+            scoreBin,
+            canny,
+            edgeRaw,
+            edgePost,
+            absGx32,
+            absGy32,
+            hScore32,
+            vScore32,
+            hScore,
+            vScore,
+            blurSoft,
+            blurStrong
+        ).forEach { it.release() }
 
         return pack
     }
@@ -266,44 +338,69 @@ object EdgeMapBuilder3250 {
         debugTag3250: String,
         filGeometryPtsGlobal3250: List<PointF>? = null
     ) {
-        val grayBmp = u8ToBitmap3250(pack3250.grayU83250, pack3250.w3250, pack3250.h3250)
-        val scoreBmp = u8ToBitmap3250(pack3250.scoreU83250, pack3250.w3250, pack3250.h3250)
-        val hScoreBmp = u8ToBitmap3250(pack3250.hScoreU83250, pack3250.w3250, pack3250.h3250)
-        val vScoreBmp = u8ToBitmap3250(pack3250.vScoreU83250, pack3250.w3250, pack3250.h3250)
-        val cannyBmp = u8ToBitmap3250(pack3250.cannyU83250, pack3250.w3250, pack3250.h3250)
-        val rawBmp = u8ToBitmap3250(pack3250.edgeRawU83250, pack3250.w3250, pack3250.h3250)
-        val postBmp = u8ToBitmap3250(pack3250.edgePostU83250, pack3250.w3250, pack3250.h3250)
+        val labels = listOf(
+            "gray",
+            "score",
+            "hscore",
+            "vscore",
+            "canny",
+            "edge_raw",
+            "detector_input"
+        )
 
-        saveBitmapPng3250(ctx, grayBmp, "EDGE3250_${debugTag3250}_01_gray")
-        saveBitmapPng3250(ctx, scoreBmp, "EDGE3250_${debugTag3250}_02_score")
-        saveBitmapPng3250(ctx, hScoreBmp, "EDGE3250_${debugTag3250}_03_hscore")
-        saveBitmapPng3250(ctx, vScoreBmp, "EDGE3250_${debugTag3250}_04_vscore")
-        saveBitmapPng3250(ctx, cannyBmp, "EDGE3250_${debugTag3250}_05_canny")
-        saveBitmapPng3250(ctx, rawBmp, "EDGE3250_${debugTag3250}_06_edge_raw")
-        saveBitmapPng3250(ctx, postBmp, "EDGE3250_${debugTag3250}_07_detector_input")
+        val data = listOf(
+            pack3250.grayU83250,
+            pack3250.scoreU83250,
+            pack3250.hScoreU83250,
+            pack3250.vScoreU83250,
+            pack3250.cannyU83250,
+            pack3250.edgeRawU83250,
+            pack3250.edgePostU83250
+        )
 
+        var postBmp: Bitmap? = null
 
-        val overlayBmp = postBmp.copy(Bitmap.Config.ARGB_8888, true)
-        val ptsRoi = filGeometryPtsGlobal3250
-            ?.map {
-                PointF(
-                    it.x - pack3250.roiRectGlobal3250.left,
-                    it.y - pack3250.roiRectGlobal3250.top
-                )
-            }
-            ?.filter { it.x in 0f..(pack3250.w3250 - 1).toFloat() && it.y in 0f..(pack3250.h3250 - 1).toFloat() }
-
-
-        if (!ptsRoi.isNullOrEmpty()) {
-            drawPolylineOnBitmap3250(
-                bmp = overlayBmp,
-                pts = ptsRoi,
-                color = Color.RED,
-                strokePx = 2.0f,
-                closed = true
+        data.forEachIndexed { i, bytes ->
+            val bmp = u8ToBitmap3250(bytes, pack3250.w3250, pack3250.h3250)
+            if (i == 6) postBmp = bmp
+            saveBitmapPng3250(
+                ctx = ctx,
+                bmp = bmp,
+                baseName3250 = "EDGE3250_${debugTag3250}_${(i + 1).toString().padStart(2, '0')}_${labels[i]}"
             )
         }
-        saveBitmapPng3250(ctx, overlayBmp, "EDGE3250_${debugTag3250}_08_detector_input_plus_fil")
+
+        postBmp?.let { bmp ->
+            val overlayBmp = bmp.copy(Bitmap.Config.ARGB_8888, true)
+
+            val ptsRoi = filGeometryPtsGlobal3250
+                ?.map {
+                    PointF(
+                        it.x - pack3250.roiRectGlobal3250.left,
+                        it.y - pack3250.roiRectGlobal3250.top
+                    )
+                }
+                ?.filter {
+                    it.x in 0f..(pack3250.w3250 - 1).toFloat() &&
+                            it.y in 0f..(pack3250.h3250 - 1).toFloat()
+                }
+
+            if (!ptsRoi.isNullOrEmpty()) {
+                drawPolylineOnBitmap3250(
+                    bmp = overlayBmp,
+                    pts = ptsRoi,
+                    color = Color.RED,
+                    strokePx = 2.0f,
+                    closed = true
+                )
+            }
+
+            saveBitmapPng3250(
+                ctx = ctx,
+                bmp = overlayBmp,
+                baseName3250 = "EDGE3250_${debugTag3250}_08_detector_input_plus_fil"
+            )
+        }
     }
 
     private fun postProcessEdgeU83250(
@@ -355,29 +452,27 @@ object EdgeMapBuilder3250 {
         val arr = ByteArray(w * h)
         srcU83250.get(0, 0, arr)
 
-        fun isOn(x: Int, y: Int): Boolean {
-            return (arr[y * w + x].toInt() and 0xFF) != 0
-        }
-
-        fun setOn(x: Int, y: Int) {
-            arr[y * w + x] = 0xFF.toByte()
-        }
-
         for (y in 0 until h) {
+            val rowOff = y * w
             var x = 0
+
             while (x < w) {
-                if (!isOn(x, y)) {
+                if ((arr[rowOff + x].toInt() and 0xFF) == 0) {
                     x++
                     continue
                 }
 
                 var run1End = x
-                while (run1End + 1 < w && isOn(run1End + 1, y)) run1End++
+                while (run1End + 1 < w && (arr[rowOff + run1End + 1].toInt() and 0xFF) != 0) {
+                    run1End++
+                }
                 val run1Len = run1End - x + 1
 
                 val gapStart = run1End + 1
                 var gapEnd = gapStart
-                while (gapEnd < w && !isOn(gapEnd, y)) gapEnd++
+                while (gapEnd < w && (arr[rowOff + gapEnd].toInt() and 0xFF) == 0) {
+                    gapEnd++
+                }
 
                 if (gapEnd >= w) {
                     x = run1End + 1
@@ -386,12 +481,16 @@ object EdgeMapBuilder3250 {
 
                 val run2Start = gapEnd
                 var run2End = run2Start
-                while (run2End + 1 < w && isOn(run2End + 1, y)) run2End++
+                while (run2End + 1 < w && (arr[rowOff + run2End + 1].toInt() and 0xFF) != 0) {
+                    run2End++
+                }
                 val run2Len = run2End - run2Start + 1
                 val gapLen = run2Start - gapStart
 
                 if (run1Len >= minRunPx3250 && run2Len >= minRunPx3250 && gapLen in 1..maxGapPx3250) {
-                    for (xx in gapStart until run2Start) setOn(xx, y)
+                    for (xx in gapStart until run2Start) {
+                        arr[rowOff + xx] = 0xFF.toByte()
+                    }
                 }
 
                 x = run2End + 1
@@ -414,6 +513,11 @@ object EdgeMapBuilder3250 {
 
         val out = ByteArray(w * h)
 
+        val r225 = 22.5 * PI / 180.0
+        val r675 = 67.5 * PI / 180.0
+        val r1125 = 112.5 * PI / 180.0
+        val r1575 = 157.5 * PI / 180.0
+
         for (i in out.indices) {
             val gx = gxArr[i].toInt()
             val gy = gyArr[i].toInt()
@@ -423,17 +527,16 @@ object EdgeMapBuilder3250 {
                 continue
             }
 
-            val ang = Math.toDegrees(atan2(gy.toDouble(), gx.toDouble()))
-            val a = ((ang + 180.0) % 180.0)
+            var ang = atan2(gy.toDouble(), gx.toDouble())
+            if (ang < 0.0) ang += PI
 
-            val bin = when {
-                a < 22.5 -> 0
-                a < 67.5 -> 1
-                a < 112.5 -> 2
-                a < 157.5 -> 3
+            out[i] = when {
+                ang < r225 -> 0
+                ang < r675 -> 1
+                ang < r1125 -> 2
+                ang < r1575 -> 3
                 else -> 0
-            }
-            out[i] = bin.toByte()
+            }.toByte()
         }
 
         return out
@@ -469,6 +572,35 @@ object EdgeMapBuilder3250 {
 
         val minThr = max(1, (maxV * minFrac3250).roundToInt())
         return max(pctl, minThr)
+    }
+
+    private fun computePercentileU83250(
+        valuesU83250: ByteArray,
+        percentile3250: Double,
+        ignoreZeros3250: Boolean
+    ): Double {
+        val hist = IntArray(256)
+        var total = 0
+
+        for (b in valuesU83250) {
+            val v = b.toInt() and 0xFF
+            if (ignoreZeros3250 && v == 0) continue
+            hist[v]++
+            total++
+        }
+
+        if (total <= 0) return 0.0
+
+        val p = percentile3250.coerceIn(0.0, 100.0)
+        val target = kotlin.math.ceil(total * (p / 100.0)).toInt().coerceAtLeast(1)
+
+        var acc = 0
+        for (v in 0..255) {
+            acc += hist[v]
+            if (acc >= target) return v.toDouble()
+        }
+
+        return 255.0
     }
 
     private fun matU8ToByteArray3250(mat: Mat): ByteArray {
@@ -510,8 +642,91 @@ object EdgeMapBuilder3250 {
         return Rect(l, t, rr, bb)
     }
 
-    private fun ensureOdd3250(v: Int): Int = if (v % 2 == 0) v + 1 else v
+    private fun ensureOdd3250(v: Int): Int {
+        return if (v % 2 == 0) v + 1 else v
+    }
 
+    private fun cropFullMaskToRoi3250(
+        full: ByteArray?,
+        fullW: Int,
+        fullH: Int,
+        roi: Rect
+    ): ByteArray? {
+        if (full == null) return null
+        if (full.size < fullW * fullH) return null
+
+        val w = roi.width()
+        val h = roi.height()
+        if (w <= 0 || h <= 0) return null
+
+        val out = ByteArray(w * h)
+        var dst = 0
+
+        for (y in 0 until h) {
+            val srcOff = (roi.top + y) * fullW + roi.left
+            full.copyInto(out, dst, srcOff, srcOff + w)
+            dst += w
+        }
+
+        return out
+    }
+    private fun buildGuidedGray3250(
+        graySrcU83250: ByteArray,
+        blurSoftU83250: ByteArray,
+        blurStrongU83250: ByteArray,
+        workMaskU83250: ByteArray?,
+        rimBodyMaskU83250: ByteArray?,
+        innerBoundaryMaskU83250: ByteArray?,
+        flattenMaskU83250: ByteArray?
+    ): ByteArray {
+        val n = graySrcU83250.size
+        val out = ByteArray(n)
+
+        val hasWork = workMaskU83250 != null
+        val hasRim = rimBodyMaskU83250 != null
+        val hasInner = innerBoundaryMaskU83250 != null
+        val hasFlatten = flattenMaskU83250 != null
+
+        for (i in 0 until n) {
+            val gray = graySrcU83250[i].toInt() and 0xFF
+            val soft = blurSoftU83250[i].toInt() and 0xFF
+            val strong = blurStrongU83250[i].toInt() and 0xFF
+
+            val inInner = hasInner && ((innerBoundaryMaskU83250!![i].toInt() and 0xFF) != 0)
+            val inRim = hasRim && ((rimBodyMaskU83250!![i].toInt() and 0xFF) != 0)
+            val inWork = hasWork && ((workMaskU83250!![i].toInt() and 0xFF) != 0)
+
+            val flattenW = if (hasFlatten) {
+                (flattenMaskU83250!![i].toInt() and 0xFF) / 255f
+            } else {
+                0f
+            }
+
+            val v = when {
+                inInner -> {
+                    ((gray * 0.88f) + (soft * 0.12f)).roundToInt()
+                }
+
+                inRim -> {
+                    ((gray * 0.72f) + (soft * 0.28f)).roundToInt()
+                }
+
+                inWork -> {
+                    val base = ((soft * 0.35f) + (strong * 0.65f))
+                    val flat = strong.toFloat()
+                    ((base * (1f - flattenW)) + (flat * flattenW)).roundToInt()
+                }
+
+                else -> {
+                    ((gray * 0.12f) + (strong * 0.88f)).roundToInt()
+                }
+            }
+
+            out[i] = v.coerceIn(0, 255).toByte()
+        }
+
+        return out
+    }
     private fun drawPolylineOnBitmap3250(
         bmp: Bitmap,
         pts: List<PointF>,
@@ -558,57 +773,22 @@ object EdgeMapBuilder3250 {
 
         val uri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values) ?: return null
 
-        var os: OutputStream? = null
         return try {
-            os = resolver.openOutputStream(uri)
-                ?: throw IllegalStateException("EDGE3250: openOutputStream devolvió null para $fileName")
-
-            bmp.compress(Bitmap.CompressFormat.PNG, 100, os)
-            os.flush()
-
-            val done = ContentValues().apply {
-                put(MediaStore.Images.Media.IS_PENDING, 0)
+            resolver.openOutputStream(uri)?.use { os ->
+                bmp.compress(Bitmap.CompressFormat.PNG, 100, os)
             }
-            resolver.update(uri, done, null, null)
-
+            resolver.update(
+                uri,
+                ContentValues().apply {
+                    put(MediaStore.Images.Media.IS_PENDING, 0)
+                },
+                null,
+                null
+            )
             uri
         } catch (t: Throwable) {
             Log.e(TAG, "EDGE3250: saveBitmapPng falló $baseName3250", t)
             null
-        } finally {
-            try {
-                os?.close()
-            } catch (_: Throwable) {
-            }
         }
     }
-    private fun computePercentileU83250(
-        valuesU83250: ByteArray,
-        percentile3250: Double,
-        ignoreZeros3250: Boolean
-    ): Double {
-        val hist = IntArray(256)
-        var total = 0
-
-        for (b in valuesU83250) {
-            val v = b.toInt() and 0xFF
-            if (ignoreZeros3250 && v == 0) continue
-            hist[v]++
-            total++
-        }
-
-        if (total <= 0) return 0.0
-
-        val p = percentile3250.coerceIn(0.0, 100.0)
-        val target = kotlin.math.ceil(total * (p / 100.0)).toInt().coerceAtLeast(1)
-
-        var acc = 0
-        for (v in 0..255) {
-            acc += hist[v]
-            if (acc >= target) return v.toDouble()
-        }
-
-        return 255.0
-    }
-
 }
