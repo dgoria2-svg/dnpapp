@@ -627,13 +627,13 @@ object RimDetectorBlock3250 {
                     }
             val topTolPx = max(14, (1.20f * pxPerMmX).roundToInt())
 
-            val expectedTopForSearch: Int? = null
+            val expectedTopForSearch = vSeeds.topGuideY
 
             val minTopSearchUpPx = max(8, (0.80f * pxPerMmX).roundToInt())
             val maxTopSearchUpPx =
                 max(minTopSearchUpPx + 40, (2.50f * pxPerMmX).roundToInt())
 
-            val topSearchMinY = 0
+            val topSearchMinY = vSeeds.topSearchMinY
 
             val topSpanPx = max(1, b - a + 1)
             val topMinHits = max(12, (topSpanPx * 0.18f).roundToInt())
@@ -739,6 +739,7 @@ object RimDetectorBlock3250 {
                 h = h,
                 leftX = a,
                 rightX = b,
+                ySeed = vSeeds.topSeedY,
                 yMin = topSearchMinY,
                 stepX = 4,
                 minHits = topMinHits,
@@ -2778,6 +2779,7 @@ object RimDetectorBlock3250 {
         h: Int,
         leftX: Int,
         rightX: Int,
+        ySeed: Int,
         yMin: Int,
         stepX: Int,
         minHits: Int,
@@ -2793,7 +2795,8 @@ object RimDetectorBlock3250 {
         val xb = (rightX - 8).coerceIn(0, w - 1)
         if (xb - xa < 50) return null
 
-        val yHi = yMin.coerceIn(0, h - 1)
+        val yLo = yMin.coerceIn(0, h - 1)
+        val yHi = ySeed.coerceIn(yLo, h - 1)
 
         if (DBG) {
             Log.d(
@@ -2801,12 +2804,12 @@ object RimDetectorBlock3250 {
                 "TOPINIT " +
                         "leftX=$leftX rightX=$rightX " +
                         "xa=$xa xb=$xb " +
-                        "yHi=$yHi " +
+                        "yLo=$yLo yHi=$yHi ySeed=$ySeed " +
                         "stepX=$stepX minHits=$minHits"
             )
         }
 
-        if (yHi < 10) return null
+        if (yHi - yLo < 10) return null
 
         val xMid = ((leftX + rightX) / 2).coerceIn(xa, xb)
 
@@ -2815,122 +2818,138 @@ object RimDetectorBlock3250 {
         var seedTop: SeedTop? = null
 
         run {
-            val ptsTopBand = ArrayList<Pair<Int, Int>>()
+            val x0 = (xMid - stepX * 2).coerceIn(xa, xb)
+            val x1 = (xMid + stepX * 2).coerceIn(xa, xb)
 
-                    var xBand = xa
-                    while (xBand <= xb) {
-                        val yHit = findBestTopEdgeInWindow3250(
-                            edgesU8 = edgesU8,
-                            dirU8 = dirU8,
-                            maskU8 = maskU8,
-                            hScoreU8 = hScoreU8,
-                            w = w,
-                            a = xBand,
-                            b = xBand,
-                            y0 = 0,
-                            y1 = yHi,
-                            expectedY = null,
-                            profile3250 = profile3250,
-                            minOuterGapPx = minOuterGapPx,
-                            maxOuterGapPx = maxOuterGapPx
-                        )
+            val y0 = (ySeed - contJumpPx * 4).coerceIn(yLo, yHi)
+            val y1 = (ySeed + contJumpPx * 2).coerceIn(yLo, yHi)
 
-                        if (yHit >= 0) {
-                            ptsTopBand.add(xBand to yHit)
-                        }
+            val yMid = findBestTopEdgeInWindow3250(
+                edgesU8 = edgesU8,
+                dirU8 = dirU8,
+                maskU8 = maskU8,
+                hScoreU8 = hScoreU8,
+                w = w,
+                a = x0,
+                b = x1,
+                y0 = y0,
+                y1 = y1,
+                expectedY = ySeed,
+                profile3250 = profile3250,
+                minOuterGapPx = minOuterGapPx,
+                maxOuterGapPx = maxOuterGapPx
+            )
 
-                        xBand += stepX
-                    }
+            if (yMid >= 0) {
+                seedTop = SeedTop(xMid, yMid)
+                return@run
+            }
 
-                    if (DBG) {
-                        Log.d(
-                            TAG,
-                            "TOPBAND size=${ptsTopBand.size}"
-                        )
-                    }
+            val yGuideMid = topGuideYAtX(xMid)?.coerceIn(yLo, yHi) ?: ySeed
+            val y2 = (yGuideMid - contJumpPx * 4).coerceIn(yLo, yHi)
+            val y3 = (yGuideMid + contJumpPx * 2).coerceIn(yLo, yHi)
 
-                    if (DBG && ptsTopBand.isNotEmpty()) {
-                        Log.d(
-                            TAG,
-                            "TOPBAND_RANGE " +
-                                    "topAB=${ptsTopBand.minOf { it.second }} " +
-                                    "bottomAB=${ptsTopBand.maxOf { it.second }}"
-                        )
-                    }
+            val yMidGuide = findBestTopEdgeInWindow3250(
+                edgesU8 = edgesU8,
+                dirU8 = dirU8,
+                maskU8 = maskU8,
+                hScoreU8 = hScoreU8,
+                w = w,
+                a = x0,
+                b = x1,
+                y0 = y2,
+                y1 = y3,
+                expectedY = yGuideMid,
+                profile3250 = profile3250,
+                minOuterGapPx = minOuterGapPx,
+                maxOuterGapPx = maxOuterGapPx
+            )
 
-                    if (ptsTopBand.isEmpty()) return@run
+            if (yMidGuide >= 0) {
+                seedTop = SeedTop(xMid, yMidGuide)
+                return@run
+            }
 
-                    val x0 = (xMid - stepX * 2).coerceIn(xa, xb)
-                    val x1 = (xMid + stepX * 2).coerceIn(xa, xb)
+            fun findSeedAtXFromAB(xTry: Int): Int {
+                val x0Local = (xTry - stepX * 2).coerceIn(xa, xb)
+                val x1Local = (xTry + stepX * 2).coerceIn(xa, xb)
 
-                    val yMid = findBestTopEdgeInWindow3250(
+                val yGuideX = topGuideYAtX(xTry)?.coerceIn(yLo, yHi) ?: return -1
+
+                val y0Local = (yGuideX - contJumpPx * 4).coerceIn(yLo, yHi)
+                val y1Local = (yGuideX + contJumpPx * 2).coerceIn(yLo, yHi)
+
+                var y = findBestTopEdgeInWindow3250(
+                    edgesU8 = edgesU8,
+                    dirU8 = dirU8,
+                    maskU8 = maskU8,
+                    hScoreU8 = hScoreU8,
+                    w = w,
+                    a = x0Local,
+                    b = x1Local,
+                    y0 = y0Local,
+                    y1 = y1Local,
+                    expectedY = yGuideX,
+                    profile3250 = profile3250,
+                    minOuterGapPx = minOuterGapPx,
+                    maxOuterGapPx = maxOuterGapPx
+                )
+
+                if (y < 0) {
+                    val y0Wide = (yGuideX - contJumpPx * 6).coerceIn(yLo, yHi)
+                    val y1Wide = (yGuideX + contJumpPx * 3).coerceIn(yLo, yHi)
+
+                    y = findBestTopEdgeInWindow3250(
                         edgesU8 = edgesU8,
                         dirU8 = dirU8,
                         maskU8 = maskU8,
                         hScoreU8 = hScoreU8,
                         w = w,
-                        a = x0,
-                        b = x1,
-                        y0 = 0,
-                        y1 = yHi,
-                        expectedY = null,
+                        a = x0Local,
+                        b = x1Local,
+                        y0 = y0Wide,
+                        y1 = y1Wide,
+                        expectedY = yGuideX,
                         profile3250 = profile3250,
                         minOuterGapPx = minOuterGapPx,
                         maxOuterGapPx = maxOuterGapPx
                     )
+                }
 
-                    if (yMid >= 0) {
-                        seedTop = SeedTop(xMid, yMid)
+                return y
+            }
+
+            var d = stepX
+            while (xMid - d >= xa || xMid + d <= xb) {
+                val xl = xMid - d
+                if (xl in xa..xb) {
+                    val yl = findSeedAtXFromAB(xl)
+                    if (yl >= 0) {
+                        seedTop = SeedTop(xl, yl)
                         return@run
                     }
+                }
 
-                    fun findSeedAtXFromAB(xTry: Int): Int {
-                        return findBestTopEdgeInWindow3250(
-                            edgesU8 = edgesU8,
-                            dirU8 = dirU8,
-                            maskU8 = maskU8,
-                            hScoreU8 = hScoreU8,
-                            w = w,
-                            a = xTry,
-                            b = xTry,
-                            y0 = 0,
-                            y1 = yHi,
-                            expectedY = null,
-                            profile3250 = profile3250,
-                            minOuterGapPx = minOuterGapPx,
-                            maxOuterGapPx = maxOuterGapPx
-                        )
-                    }
-
-                    var d = stepX
-                    while (xMid - d >= xa || xMid + d <= xb) {
-                        val xl = xMid - d
-                        if (xl in xa..xb) {
-                            val yl = findSeedAtXFromAB(xl)
-                            if (yl >= 0) {
-                                seedTop = SeedTop(xl, yl)
-                                return@run
-                            }
-                        }
-
-                        val xr = xMid + d
-                        if (xr in xa..xb) {
-                            val yr = findSeedAtXFromAB(xr)
-                            if (yr >= 0) {
-                                seedTop = SeedTop(xr, yr)
-                                return@run
-                            }
-                        }
-
-                        d += stepX
+                val xr = xMid + d
+                if (xr in xa..xb) {
+                    val yr = findSeedAtXFromAB(xr)
+                    if (yr >= 0) {
+                        seedTop = SeedTop(xr, yr)
+                        return@run
                     }
                 }
+
+                d += stepX
+            }
+        }
+
         if (DBG) {
             Log.d(
                 TAG,
                 "TOPSEED x=${seedTop?.x ?: -1} y=${seedTop?.y ?: -1}"
             )
         }
+
         val seedTopX = seedTop?.x ?: return null
         val seedTopY = seedTop.y
 
@@ -2944,7 +2963,18 @@ object RimDetectorBlock3250 {
                 val x0 = (x - stepX * 2).coerceIn(xa, xb)
                 val x1 = (x + stepX * 2).coerceIn(xa, xb)
 
-                val yBase = prevY.coerceIn(0, h - 1)
+                val winPad = (contJumpPx + missCount * 2).coerceAtMost(contJumpPx * 3)
+                val guideY = topGuideYAtX(x)?.coerceIn(yLo, yHi) ?: prevY
+
+                val yRef = ((prevY + guideY) / 2).coerceIn(yLo, yHi)
+
+                val yWin0 =
+                    (yRef - winPad * 3)
+                        .coerceIn(yLo, yHi)
+
+                val yWin1 =
+                    (yRef + max(contJumpPx, winPad))
+                        .coerceIn(yLo, yHi)
 
                 var bestY = findBestTopEdgeInWindow3250(
                     edgesU8 = edgesU8,
@@ -2954,15 +2984,25 @@ object RimDetectorBlock3250 {
                     w = w,
                     a = x0,
                     b = x1,
-                    y0 = 0,
-                    y1 = yBase,
-                    expectedY = null,
+                    y0 = yWin0,
+                    y1 = yWin1,
+                    expectedY = guideY,
                     profile3250 = profile3250,
                     minOuterGapPx = minOuterGapPx,
                     maxOuterGapPx = maxOuterGapPx
                 )
 
-                if (bestY < 0 && missCount < 2) {
+                if (bestY < 0) {
+                    val fallbackRefY = ((prevY + guideY) / 2).coerceIn(yLo, yHi)
+
+                    val ySoft0 =
+                        (fallbackRefY - winPad * 2)
+                            .coerceIn(yLo, yHi)
+
+                    val ySoft1 =
+                        (fallbackRefY + max(contJumpPx * 2, winPad))
+                            .coerceIn(yLo, yHi)
+
                     bestY = findBestTopEdgeInWindow3250(
                         edgesU8 = edgesU8,
                         dirU8 = dirU8,
@@ -2971,9 +3011,35 @@ object RimDetectorBlock3250 {
                         w = w,
                         a = x0,
                         b = x1,
-                        y0 = 0,
-                        y1 = yHi,
-                        expectedY = null,
+                        y0 = ySoft0,
+                        y1 = ySoft1,
+                        expectedY = guideY,
+                        profile3250 = profile3250,
+                        minOuterGapPx = minOuterGapPx,
+                        maxOuterGapPx = maxOuterGapPx
+                    )
+                }
+
+                if (bestY < 0) {
+                    val yWide0 =
+                        (guideY - winPad * 3)
+                            .coerceIn(yLo, yHi)
+
+                    val yWide1 =
+                        (prevY + winPad * 2)
+                            .coerceIn(yLo, yHi)
+
+                    bestY = findBestTopEdgeInWindow3250(
+                        edgesU8 = edgesU8,
+                        dirU8 = dirU8,
+                        maskU8 = maskU8,
+                        hScoreU8 = hScoreU8,
+                        w = w,
+                        a = x0,
+                        b = x1,
+                        y0 = yWide0,
+                        y1 = yWide1,
+                        expectedY = guideY,
                         profile3250 = profile3250,
                         minOuterGapPx = minOuterGapPx,
                         maxOuterGapPx = maxOuterGapPx
@@ -2994,6 +3060,7 @@ object RimDetectorBlock3250 {
 
             return out
         }
+
         val leftHalf = traceHalf(seedTopX, -1).drop(1)
         val rightHalf = traceHalf(seedTopX, +1)
 
@@ -3241,10 +3308,10 @@ object RimDetectorBlock3250 {
             }
 
             fun score(): Float {
-                return pts.size * 100f +
-                        xSpan() * 2f -
-                        totalAbsDy() * 1.5f -
-                        ySpan() * 0.5f
+                return xSpan() * 6f +
+                        pts.size * 20f -
+                        totalAbsDy() * 2.5f -
+                        ySpan() * 1.5f
             }
         }
 
@@ -3260,7 +3327,7 @@ object RimDetectorBlock3250 {
             val dy = abs(now.second - prev.second)
 
             val contiguous =
-                dx in 0..maxJumpX &&
+                dx in 1..maxJumpX &&
                         dy <= maxJumpY
 
             if (contiguous) {

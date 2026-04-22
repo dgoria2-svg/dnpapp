@@ -1047,7 +1047,7 @@ internal fun findBestTopEdgeInWindow3250(
                     g.xs.size * 600 +
                     density * 20 +
                     g.scoreSum -
-                    yTop * 150
+                    yTop * 40
 
         if (groupScore > bestGroupScore) {
             bestGroupScore = groupScore
