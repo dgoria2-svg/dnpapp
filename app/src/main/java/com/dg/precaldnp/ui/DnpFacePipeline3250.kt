@@ -23,6 +23,8 @@ import com.dg.precaldnp.vision.ArcFitAdapter3250
 import com.dg.precaldnp.vision.DebugDump3250
 import com.dg.precaldnp.vision.DebugDumpFace3250
 import com.dg.precaldnp.vision.EdgeMapBuilder3250
+import com.dg.precaldnp.vision.EdgeMapPolylineDebug3250
+import com.dg.precaldnp.vision.EdgeMapTopGuide3250
 import com.dg.precaldnp.vision.EyeEllipseMask3250
 import com.dg.precaldnp.vision.FilContourBuilder3250
 import com.dg.precaldnp.vision.FilGeometry3250
@@ -37,6 +39,7 @@ import com.dg.precaldnp.vision.RimDetectorBlock3250
 import com.dg.precaldnp.vision.RimProfile3250
 import com.dg.precaldnp.vision.RimRenderSampler3250
 import com.dg.precaldnp.vision.RoiAppearanceNormalizer3250
+import com.dg.precaldnp.vision.TopPolylineSelector3250
 import com.dg.precaldnp.vision.effectiveFilOverPerSide3250
 import org.opencv.core.Rect
 import java.io.ByteArrayInputStream
@@ -96,7 +99,7 @@ object DnpFacePipeline3250 {
         val estimated: Boolean,
         val src: String
     )
-    data class FrontMaskPack3250(
+    class FrontMaskPack3250(
         val workMaskFullU8: ByteArray?,
         val rimBodyMaskFullU8: ByteArray?,
         val innerBoundaryMaskFullU8: ByteArray?,
@@ -579,17 +582,70 @@ object DnpFacePipeline3250 {
             hRoi = edgePackOi3250.h3250
         )
         blitRoiIntoFullU83250(
-            dstFull = dirFullU8,
-            wFull = w,
-            hFull = h,
-            roiGlobal = edgePackOi3250.roiRectGlobal3250,
-            srcRoi = edgePackOi3250.dirU83250,
-            wRoi = edgePackOi3250.w3250,
-            hRoi = edgePackOi3250.h3250
+        dstFull = dirFullU8,
+        wFull = w,
+        hFull = h,
+        roiGlobal = edgePackOi3250.roiRectGlobal3250,
+        srcRoi = edgePackOi3250.dirU83250,
+        wRoi = edgePackOi3250.w3250,
+        hRoi = edgePackOi3250.h3250
         )
+
         Log.d(
             TAG,
             "EDGE3250 FULL_FROM_ROI odNZ=${edgePackOd3250.nonZeroPost3250} oiNZ=${edgePackOi3250.nonZeroPost3250} fullN=${edgeFullU8.size}"
+        )
+
+        val dbgOd3250 = EdgeMapPolylineDebug3250.extractAll3250(
+            edgeU8 = edgePackOd3250.edgePostU83250,
+            w = edgePackOd3250.w3250,
+            h = edgePackOd3250.h3250,
+            roiLeft = edgePackOd3250.roiRectGlobal3250.left,
+            roiTop = edgePackOd3250.roiRectGlobal3250.top,
+            minAreaPx = 1.0,
+            minPerimeterPx = 10.0,
+            minPoints = 6,
+            approxEpsilonPx = 0.0
+        )
+
+        val topPolyOd3250 = TopPolylineSelector3250.pickTopPolyline3250(
+            polys = dbgOd3250.polylines,
+            minPoints = 20
+        )
+
+            val topSeedYObservedOd3250 = topPolyOd3250?.let {
+            EdgeMapTopGuide3250.meanY3250(it.pointsLocal)
+        }
+
+        Log.d(
+            TAG,
+            "TOPPOLY OD pts=${topPolyOd3250?.pointCount} seedY=$topSeedYObservedOd3250 bbox=${topPolyOd3250?.bboxLocal}"
+        )
+
+        val dbgOi3250 = EdgeMapPolylineDebug3250.extractAll3250(
+            edgeU8 = edgePackOi3250.edgePostU83250,
+            w = edgePackOi3250.w3250,
+            h = edgePackOi3250.h3250,
+            roiLeft = edgePackOi3250.roiRectGlobal3250.left,
+            roiTop = edgePackOi3250.roiRectGlobal3250.top,
+            minAreaPx = 1.0,
+            minPerimeterPx = 10.0,
+            minPoints = 6,
+            approxEpsilonPx = 0.0
+        )
+
+        val topPolyOi3250 = TopPolylineSelector3250.pickTopPolyline3250(
+            polys = dbgOi3250.polylines,
+            minPoints = 20
+        )
+
+        val topSeedYObservedOi3250 = topPolyOi3250?.let {
+            EdgeMapTopGuide3250.meanY3250(it.pointsLocal)
+        }
+
+        Log.d(
+            TAG,
+            "TOPPOLY OI pts=${topPolyOi3250?.pointCount} seedY=$topSeedYObservedOi3250 bbox=${topPolyOi3250?.bboxLocal}"
         )
 
         val probeOd = packOd?.let {
@@ -601,7 +657,7 @@ object DnpFacePipeline3250 {
                 w = stillBmp.width,
                 h = stillBmp.height
             )
-        }
+                }
 
         val probeOi = packOi?.let {
             probeFromPolyline3250(
@@ -1700,6 +1756,31 @@ object DnpFacePipeline3250 {
         // ============================================================
         // RimDetector: edge map crudo + máscara + profile
         // ============================================================
+         val dbgOd3250 = EdgeMapPolylineDebug3250.extractAll3250(
+             edgeU8 = edgesOdU8,
+             w = wOd,
+             h = hOd,
+             roiLeft = roiOdGlobal.left.toInt(),
+             roiTop = roiOdGlobal.top.toInt(),
+             minAreaPx = 1.0,
+             minPerimeterPx = 10.0,
+             minPoints = 6,
+             approxEpsilonPx = 0.0
+         )
+
+         val topPolyOd3250 = TopPolylineSelector3250.pickTopPolyline3250(
+             polys = dbgOd3250.polylines,
+             minPoints = 20
+         )
+
+         val topGuideYAtXOd3250 = topPolyOd3250?.let {
+             EdgeMapTopGuide3250.buildTopGuideYAtX3250(it.pointsLocal)
+         }
+
+         val topSeedYObservedOd3250 = topPolyOd3250?.let {
+             EdgeMapTopGuide3250.meanY3250(it.pointsLocal)
+         }
+
         val detOdPick0 = RimDetectorBlock3250.detectRimAutoProfile3250(
             edgesU8 = edgesOdU8,
             dirU8 = dirOdU8,
@@ -1711,16 +1792,41 @@ object DnpFacePipeline3250 {
             vScoreU8 = vScoreOdU8,
             roiGlobal = roiOdGlobal,
             midlineXpx = roiSrc.midXBridgeGlobal3250,
-            browBottomYpx = roiSrc.browBottomOdY,
             filHboxMm = filHboxMm,
             filVboxMm = filVboxMm,
             filOverInnerMmPerSide3250 = filOverInnerMmPerSide,
             bridgeRowYpxGlobal = roiSrc.bridgeRowYGlobal3250,
             pupilGlobal = pm.pupilOdForRoi,
             filPtsMm3250 = filOdMm.ptsMm,
+            topGuideObservedYAtX3250 = topGuideYAtXOd3250,
+            topSeedObservedY3250 = topSeedYObservedOd3250,
             debugTag = "OD",
             pxPerMmGuessFace = roiSrc.pxPerMmGuessFace
         )
+         val dbgOi3250 = EdgeMapPolylineDebug3250.extractAll3250(
+             edgeU8 = edgesOiU8,
+             w = wOi,
+             h = hOi,
+             roiLeft = roiOiGlobal.left.toInt(),
+             roiTop = roiOiGlobal.top.toInt(),
+             minAreaPx = 1.0,
+             minPerimeterPx = 10.0,
+             minPoints = 6,
+             approxEpsilonPx = 0.0
+         )
+
+         val topPolyOi3250 = TopPolylineSelector3250.pickTopPolyline3250(
+             polys = dbgOi3250.polylines,
+             minPoints = 20
+         )
+
+         val topGuideYAtXOi3250 = topPolyOi3250?.let {
+             EdgeMapTopGuide3250.buildTopGuideYAtX3250(it.pointsLocal)
+         }
+
+         val topSeedYObservedOi3250 = topPolyOi3250?.let {
+             EdgeMapTopGuide3250.meanY3250(it.pointsLocal)
+         }
 
         val detOiPick0 = RimDetectorBlock3250.detectRimAutoProfile3250(
             edgesU8 = edgesOiU8,
@@ -1733,13 +1839,14 @@ object DnpFacePipeline3250 {
             vScoreU8 = vScoreOiU8,
             roiGlobal = roiOiGlobal,
             midlineXpx = roiSrc.midXBridgeGlobal3250,
-            browBottomYpx = roiSrc.browBottomOiY,
             filHboxMm = filHboxMm,
             filVboxMm = filVboxMm,
             filOverInnerMmPerSide3250 = filOverInnerMmPerSide,
             bridgeRowYpxGlobal = roiSrc.bridgeRowYGlobal3250,
             pupilGlobal = pm.pupilOiForRoi,
             filPtsMm3250 = filOiMm.ptsMm,
+            topGuideObservedYAtX3250 = topGuideYAtXOi3250,
+            topSeedObservedY3250 = topSeedYObservedOi3250,
             debugTag = "OI",
             pxPerMmGuessFace = roiSrc.pxPerMmGuessFace
         )
@@ -1765,7 +1872,6 @@ object DnpFacePipeline3250 {
                     vScoreU8 = vScoreOdU8,
                     roiGlobal = roiOdGlobal,
                     midlineXpx = roiSrc.midXBridgeGlobal3250,
-                    browBottomYpx = roiSrc.browBottomOdY,
                     filHboxMm = filHboxMm,
                     filVboxMm = filVboxMm,
                     filOverInnerMmPerSide3250 = filOverInnerMmPerSide,
@@ -1773,6 +1879,8 @@ object DnpFacePipeline3250 {
                     pupilGlobal = pm.pupilOdForRoi,
                     pupilLocal = pupilOdLocal3250,
                     filPtsMm3250 = filOdMm.ptsMm,
+                    topGuideObservedYAtX3250 = topGuideYAtXOd3250,
+                    topSeedObservedY3250 = topSeedYObservedOd3250,
                     debugTag = "OD",
                     pxPerMmGuessFace = roiSrc.pxPerMmGuessFace
                 )
@@ -1798,14 +1906,15 @@ object DnpFacePipeline3250 {
                     vScoreU8 = vScoreOiU8,
                     roiGlobal = roiOiGlobal,
                     midlineXpx = roiSrc.midXBridgeGlobal3250,
-                    browBottomYpx = roiSrc.browBottomOiY,
                     filHboxMm = filHboxMm,
                     filVboxMm = filVboxMm,
                     filOverInnerMmPerSide3250 = filOverInnerMmPerSide,
                     bridgeRowYpxGlobal = roiSrc.bridgeRowYGlobal3250,
                     pupilGlobal = pm.pupilOiForRoi,
                     pupilLocal = pupilOiLocal3250,
-                    filPtsMm3250 = filOdMm.ptsMm,
+                    filPtsMm3250 = filOiMm.ptsMm,
+                    topGuideObservedYAtX3250 = topGuideYAtXOi3250,
+                    topSeedObservedY3250 = topSeedYObservedOi3250,
                     debugTag = "OI",
                     pxPerMmGuessFace = roiSrc.pxPerMmGuessFace
                 )
@@ -2813,7 +2922,6 @@ object DnpFacePipeline3250 {
         maskU8: ByteArray?,
         roiGlobal: RectF,
         midlineXpx: Float,
-        browBottomYpx: Float?,
         filHboxMm: Double,
         filVboxMm: Double,
         filOverInnerMmPerSide3250: Double,
@@ -2822,6 +2930,8 @@ object DnpFacePipeline3250 {
         pupilGlobal: PointF?,
         pupilLocal: PointF?,
         filPtsMm3250: List<PointF>? = null,
+        topGuideObservedYAtX3250: ((Int) -> Int?)? = null,
+        topSeedObservedY3250: Int? = null,
         debugTag: String,
         pxPerMmGuessFace: Float
     ): RimDetectPack3250? {
@@ -2891,7 +3001,6 @@ object DnpFacePipeline3250 {
                     "tex=${"%.3f".format(prep.stats.textureSuppression3250)} " +
                     "target=${prep.stats.targetLuma} blurR=${prep.stats.blurRadius}"
         )
-
         return RimDetectorBlock3250.detectRim(
             edgesU8 = edgesU8,
             dirU8 = dirU8,
@@ -2902,7 +3011,6 @@ object DnpFacePipeline3250 {
             h = h,
             roiGlobal = roiGlobal,
             midlineXpx = midlineXpx,
-            browBottomYpx = browBottomYpx,
             filHboxMm = filHboxMm,
             filVboxMm = filVboxMm,
             filOverInnerMmPerSide3250 = filOverInnerMmPerSide3250,
@@ -2910,6 +3018,8 @@ object DnpFacePipeline3250 {
             bridgeRowYpxGlobal = bridgeRowYpxGlobal,
             filPtsMm3250 = filPtsMm3250,
             pupilGlobal = pupilGlobal,
+            topGuideObservedYAtX3250 = topGuideObservedYAtX3250,
+            topSeedObservedY3250 = topSeedObservedY3250,
             debugTag = "${debugTag}_NORM",
             pxPerMmGuessFace = pxPerMmGuessFace
         )
@@ -2926,7 +3036,6 @@ object DnpFacePipeline3250 {
         maskU8: ByteArray?,
         roiGlobal: RectF,
         midlineXpx: Float,
-        browBottomYpx: Float?,
         filHboxMm: Double,
         filVboxMm: Double?,
         filOverInnerMmPerSide3250: Double,
@@ -2935,6 +3044,8 @@ object DnpFacePipeline3250 {
         pupilLocal: PointF?,
         filPtsMm3250: List<PointF>? = null,
         debugTag: String,
+        topGuideObservedYAtX3250: ((Int) -> Int?)? = null,
+        topSeedObservedY3250: Int? = null,
         pxPerMmGuessFace: Float?
     ): RimDetectProfilePick3250? {
 
@@ -2963,7 +3074,6 @@ object DnpFacePipeline3250 {
                 vScoreU8 = vScoreU8,
                 roiGlobal = roiGlobal,
                 midlineXpx = midlineXpx,
-                browBottomYpx = browBottomYpx,
                 filHboxMm = filHboxMm,
                 filVboxMm = filV,
                 filOverInnerMmPerSide3250 = filOverInnerMmPerSide3250,
@@ -2972,6 +3082,8 @@ object DnpFacePipeline3250 {
                 pupilGlobal = pupilGlobal,
                 pupilLocal = pupilLocal,
                 filPtsMm3250 = filPtsMm3250,
+                topGuideObservedYAtX3250 = topGuideObservedYAtX3250,
+                topSeedObservedY3250 = topSeedObservedY3250,
                 debugTag = "$debugTag/$profile",
                 pxPerMmGuessFace = pxGuess
             ) ?: continue

@@ -71,7 +71,6 @@ object RimDetectorBlock3250 {
         vScoreU8: ByteArray? = null,
         roiGlobal: RectF,
         midlineXpx: Float,
-        browBottomYpx: Float?,
         filHboxMm: Double,
         filVboxMm: Double?,
         filOverInnerMmPerSide3250: Double,
@@ -79,6 +78,8 @@ object RimDetectorBlock3250 {
         bridgeRowYpxGlobal: Float?,
         pupilGlobal: PointF?,
         filPtsMm3250: List<PointF>? = null,
+        topGuideObservedYAtX3250: ((Int) -> Int?)? = null,
+        topSeedObservedY3250: Int? = null,
         debugTag: String,
         pxPerMmGuessFace: Float? = null
     ): RimDetectPack3250? {
@@ -102,15 +103,18 @@ object RimDetectorBlock3250 {
                 "HBOX inner invalid fil=$filHboxMm over=$effectiveOverF profile=$profile3250"
             )
 
-        val vboxInnerMmF = ((filVboxMm ?: 0.0).toFloat() - 2f * effectiveOverF)
-            .takeIf { it.isFinite() && it > 1e-6f }
-            ?: 0f
+        val vboxInnerMmF =
+            filVboxMm
+                ?.toFloat()
+                ?.minus(2f * effectiveOverF)
+                ?.takeIf { it.isFinite() && it > 1e-6f }
+                ?: return fail("VBOX", "VBOX inner invalid filV=$filVboxMm over=$effectiveOverF profile=$profile3250")
 
         fun logSanityHeader3250() {
             d(
                 "RIM[$debugTag] profile=$profile3250 " +
                         "filH=${f13250(filHboxMm.toFloat())} " +
-                        "filV=${f13250((filVboxMm ?: Double.NaN).toFloat())} " +
+                        "filV=${f13250(filVboxMm.toFloat())} " +
                         "overIn=${f23250(filOverInnerMmPerSide3250.toFloat())} " +
                         "overEff=${f23250(effectiveOverF)} " +
                         "hboxInner=${f23250(hboxInnerMmF)} " +
@@ -627,28 +631,81 @@ object RimDetectorBlock3250 {
                     }
             val topTolPx = max(14, (1.20f * pxPerMmX).roundToInt())
 
-            val expectedTopForSearch = vSeeds.topGuideY
+            val topObsXs = ArrayList<Int>()
+            var topObsYInner: Int? = null
 
-            val minTopSearchUpPx = max(8, (0.80f * pxPerMmX).roundToInt())
-            val maxTopSearchUpPx =
-                max(minTopSearchUpPx + 40, (2.50f * pxPerMmX).roundToInt())
+            if (topGuideObservedYAtX3250 != null) {
+                for (x in a..b) {
+                    val yObs = topGuideObservedYAtX3250.invoke(x)
+                    if (yObs != null) {
+                        val yClamped = yObs.coerceIn(0, h - 1)
+                        topObsXs.add(x)
+                        if (topObsYInner == null || yClamped > topObsYInner!!) {
+                            topObsYInner = yClamped
+                        }
+                    }
+                }
+            }
 
-            val topSearchMinY = vSeeds.topSearchMinY
+            val topObsXMin = topObsXs.minOrNull()
+            val topObsXMax = topObsXs.maxOrNull()
 
-            val topSpanPx = max(1, b - a + 1)
+            val topLeftXUsed =
+                if (topObsXMin != null) max(a, topObsXMin) else a
+
+            val topRightXUsed =
+                if (topObsXMax != null) min(b, topObsXMax) else b
+
+            val topXSpanUsed = (topRightXUsed - topLeftXUsed).coerceAtLeast(0)
+
+            val topDomainValid =
+                topLeftXUsed < topRightXUsed && topXSpanUsed >= 40
+
+            val gapUpPx = when (profile3250) {
+                RimProfile3250.FULL_RIM ->
+                    max(12, (1.40f * pxPerMmX).roundToInt())
+
+                RimProfile3250.RANURADO ->
+                    max(14, (1.65f * pxPerMmX).roundToInt())
+
+                RimProfile3250.PERFORADO ->
+                    max(16, (1.90f * pxPerMmX).roundToInt())
+            }
+
+            val topSeedObservedInnerY =
+                topObsYInner?.coerceIn(0, probeYLocal)
+
+            val topSeedYUsed =
+                (topSeedObservedInnerY ?: topSeedY)
+                    .coerceIn(0, probeYLocal)
+
+            val topSearchMinY =
+                (topSeedObservedInnerY?.minus(gapUpPx) ?: (topSeedYUsed - gapUpPx))
+                    .coerceIn(0, topSeedYUsed)
+
+            val expectedTopForSearch =
+                topSeedObservedInnerY?.coerceIn(topSearchMinY, probeYLocal)
+                    ?: vSeeds.topGuideY.coerceIn(topSearchMinY, probeYLocal)
+
+            val topSpanPx = max(1, topRightXUsed - topLeftXUsed + 1)
             val topMinHits = max(12, (topSpanPx * 0.18f).roundToInt())
 
-                    if (DBG) {
-                        Log.d(
-                            TAG,
-                            "TOPWIN[$debugTag] a=$a b=$b probe=$probeYLocal " +
-                                    "topSeed=$topSeedY topMin=$topMinAllowedY " +
-                                    "topSearchMin=$topSearchMinY expTop=$expectedTopForSearch tol=$topTolPx " +
-                                    "topMinHits=$topMinHits topUpMax=$maxTopSearchUpPx"
-                        )
-                    }
-            val topGuideYAtX: (Int) -> Int? = { x: Int ->
+            if (DBG) {
+                Log.d(
+                    TAG,
+                    "TOPWIN[$debugTag] " +
+                            "a=$a b=$b " +
+                            "xObsMin=${topObsXMin ?: -1} xObsMax=${topObsXMax ?: -1} " +
+                            "xUseL=$topLeftXUsed xUseR=$topRightXUsed xSpan=$topXSpanUsed " +
+                            "probe=$probeYLocal topSeed=$topSeedYUsed " +
+                            "topObsInner=${topSeedObservedInnerY ?: -1} " +
+                            "topSearchMin=$topSearchMinY expTop=$expectedTopForSearch " +
+                            "tol=$topTolPx topMinHits=$topMinHits " +
+                            "obsGuide=${topGuideObservedYAtX3250 != null}"
+                )
+            }
 
+            val topGuideYAtXBase: (Int) -> Int? = { x: Int ->
                 if (
                     filPtsMm3250 == null ||
                     filPtsMm3250.size < 2 ||
@@ -656,12 +713,10 @@ object RimDetectorBlock3250 {
                     pxPerMmX <= 0f ||
                     b <= a
                 ) {
-                    // fallback directo si no hay FIL usable
                     val hGuessPx = (vboxInnerMmF * pxPerMmX).roundToInt()
                     (probeYLocal - hGuessPx)
                         .coerceIn(topSearchMinY, probeYLocal)
                 } else {
-
                     var minXmm = Float.POSITIVE_INFINITY
                     var maxXmm = Float.NEGATIVE_INFINITY
                     var minYmm = Float.POSITIVE_INFINITY
@@ -710,19 +765,15 @@ object RimDetectorBlock3250 {
                     }
 
                     val yPx = if (hits.isNotEmpty()) {
-
                         val yMm = hits.maxOrNull()
-
                         if (yMm != null) {
                             (probeYLocal + ((cyMm - yMm) * pxPerMmX).roundToInt())
                         } else null
-
                     } else null
 
                     if (yPx != null) {
                         yPx.coerceIn(topSearchMinY, probeYLocal)
                     } else {
-                        // 🔴 fallback geométrico HBOX/VBOX
                         val hGuessPx = (vboxInnerMmF * pxPerMmX).roundToInt()
                         (probeYLocal - hGuessPx)
                             .coerceIn(topSearchMinY, probeYLocal)
@@ -730,26 +781,37 @@ object RimDetectorBlock3250 {
                 }
             }
 
-            val topPick = pickTopInsideOut3250(
-                edgesU8 = edgesU8,
-                dirU8 = dirU8,
-                maskU8 = maskU8,
-                hScoreU8 = hScoreU8,
-                w = w,
-                h = h,
-                leftX = a,
-                rightX = b,
-                ySeed = vSeeds.topSeedY,
-                yMin = topSearchMinY,
-                stepX = 4,
-                minHits = topMinHits,
-                profile3250 = profile3250,
-                minCoverage = 0.40f,
-                contJumpPx = CONT_JUMP_PX,
-                topGuideYAtX = topGuideYAtX,
-                minOuterGapPx = minOuterGapBottomPx,
-                maxOuterGapPx = maxOuterGapBottomPx
-            )
+            val topGuideYAtX: (Int) -> Int? = { x: Int ->
+                val yObs = topGuideObservedYAtX3250?.invoke(x)
+                val yBase = topGuideYAtXBase(x)
+                (yObs ?: yBase)?.coerceIn(topSearchMinY, probeYLocal)
+            }
+
+            val topPick =
+                if (topDomainValid) {
+                    pickTopInsideOut3250(
+                        edgesU8 = edgesU8,
+                        dirU8 = dirU8,
+                        maskU8 = maskU8,
+                        hScoreU8 = hScoreU8,
+                        w = w,
+                        h = h,
+                        leftX = topLeftXUsed,
+                        rightX = topRightXUsed,
+                        ySeed = topSeedYUsed,
+                        yMin = topSearchMinY,
+                        stepX = 4,
+                        minHits = topMinHits,
+                        profile3250 = profile3250,
+                        minCoverage = 0.40f,
+                        contJumpPx = CONT_JUMP_PX,
+                        topGuideYAtX = topGuideYAtX,
+                        minOuterGapPx = minOuterGapBottomPx,
+                        maxOuterGapPx = maxOuterGapBottomPx
+                    )
+                } else {
+                    null
+                }
             if (DBG) {
                         Log.d(
                             TAG,
@@ -1831,11 +1893,7 @@ object RimDetectorBlock3250 {
                 return out.toFloatArray()
             }
 
-            private fun clampInt3250(v: Int, lo: Int, hi: Int): Int = max(lo, min(hi, v))
-            private fun clampInRange3250(v: Int, a: Int, b: Int): Int =
-                v.coerceIn(min(a, b), max(a, b))
-
-            /**
+    /**
              * Busca inner L/R en una banda vertical alrededor de yRef (la referencia oficial),
              * desde seedX hacia afuera, saltando máscara.
              *
@@ -2701,26 +2759,27 @@ object RimDetectorBlock3250 {
                 return best.pts
             }
 
-            fun detectRimAutoProfile3250(
-                edgesU8: ByteArray,
-                dirU8: ByteArray? = null,
-                maskU8: ByteArray? = null,
-                guideMaskU8: ByteArray? = null,
-                w: Int,
-                h: Int,
-                hScoreU8: ByteArray? = null,
-                vScoreU8: ByteArray? = null,
-                roiGlobal: RectF,
-                midlineXpx: Float,
-                browBottomYpx: Float?,
-                filHboxMm: Double,
-                filVboxMm: Double?,
-                filOverInnerMmPerSide3250: Double,
-                bridgeRowYpxGlobal: Float?,
-                pupilGlobal: PointF?,
-                debugTag: String,
-                filPtsMm3250: List<PointF>? = null,
-                pxPerMmGuessFace: Float? = null
+    fun detectRimAutoProfile3250(
+        edgesU8: ByteArray,
+        dirU8: ByteArray? = null,
+        maskU8: ByteArray? = null,
+        guideMaskU8: ByteArray? = null,
+        w: Int,
+        h: Int,
+        hScoreU8: ByteArray? = null,
+        vScoreU8: ByteArray? = null,
+        roiGlobal: RectF,
+        midlineXpx: Float,
+        filHboxMm: Double,
+        filVboxMm: Double?,
+        filOverInnerMmPerSide3250: Double,
+        bridgeRowYpxGlobal: Float?,
+        pupilGlobal: PointF?,
+        debugTag: String,
+        filPtsMm3250: List<PointF>? = null,
+        pxPerMmGuessFace: Float? = null,
+        topGuideObservedYAtX3250: ((Int) -> Int?)? = null,
+        topSeedObservedY3250: Int? = null
 
             ): RimDetectProfilePick3250? {
 
@@ -2744,7 +2803,6 @@ object RimDetectorBlock3250 {
                         vScoreU8 = vScoreU8,
                         roiGlobal = roiGlobal,
                         midlineXpx = midlineXpx,
-                        browBottomYpx = browBottomYpx,
                         filHboxMm = filHboxMm,
                         filVboxMm = filVboxMm,
                         filOverInnerMmPerSide3250 = filOverInnerMmPerSide3250,
@@ -2753,6 +2811,8 @@ object RimDetectorBlock3250 {
                         pupilGlobal = pupilGlobal,
                         filPtsMm3250 = filPtsMm3250,   // 🔥 ESTA LÍNEA
                         debugTag = "$debugTag/$profile",
+                        topGuideObservedYAtX3250 = topGuideObservedYAtX3250,
+                        topSeedObservedY3250 = topSeedObservedY3250,
                         pxPerMmGuessFace = pxPerMmGuessFace
                     ) ?: continue
 
@@ -3083,20 +3143,21 @@ object RimDetectorBlock3250 {
 
         val polySmooth = smoothTopPolyline3250(polyFilled)
 
+        val minTopHits = max(8, minHits / 2)
+
         val poly = keepBestTopRunByXStrict3250(
             poly = polySmooth,
             maxJumpX = stepX * 2,
             maxJumpY = contJumpPx * 2,
-            minRunPoints = minHits,
+            minRunPoints = minTopHits,
             maxTotalSecondaryDriftPx = 120
         )
+
         if (DBG) {
-            Log.d(
-                TAG,
-                "TOPRUN size=${poly.size} minHits=$minHits"
-            )
+            Log.d(TAG, "TOPRUN size=${poly.size} minTopHits=$minTopHits")
         }
-        if (poly.size < minHits) return null
+
+        if (poly.size < minTopHits) return null
 
         val xSpan = (poly.last().first - poly.first().first).coerceAtLeast(0)
         val expectedSamples = (xSpan / stepX + 1).coerceAtLeast(1)

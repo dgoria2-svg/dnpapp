@@ -817,7 +817,8 @@ internal fun collectTopCandidatesInWindow3250(
             halfX = 2,
             halfY = 1
         )
-        if (support <= 0) continue
+        val supportOk = support >= 0
+        if (!supportOk) continue
 
         val hScore = if (hScoreU8 != null && hScoreU8.size == w * h) {
             hScoreU8[idx].toInt() and 0xFF
@@ -1024,7 +1025,6 @@ internal fun findBestTopEdgeInWindow3250(
         }
     }
     groups.add(current)
-
     var bestY = -1
     var bestGroupScore = Int.MIN_VALUE
 
@@ -1039,15 +1039,13 @@ internal fun findBestTopEdgeInWindow3250(
         }
 
         val yMed = medianInt3250(g.ys)
-        val yTop = g.ys.minOrNull() ?: yMed
         val density = (g.xs.size * 100) / max(1, xr - xl + 1)
 
         val groupScore =
-            bestRun * 3000 +
-                    g.xs.size * 600 +
-                    density * 20 +
-                    g.scoreSum -
-                    yTop * 40
+            bestRun * 10000 +
+                    g.xs.size * 2000 +
+                    density * 50 +
+                    g.scoreSum
 
         if (groupScore > bestGroupScore) {
             bestGroupScore = groupScore
