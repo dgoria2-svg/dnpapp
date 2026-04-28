@@ -396,17 +396,19 @@ class DnpFaceCaptureActivity : ComponentActivity() {
                 val ancho = (shapeTrace3250.bboxWidthMm ?: Float.NaN).toDouble()
                 val alto  = (shapeTrace3250.bboxHeightMm ?: Float.NaN).toDouble()
                 val diag  = kotlin.math.hypot(ancho, alto)
+                val filEyeSizeMm = intent.getFloatExtra("EXTRA_FIL_EYESIZE_MM", Float.NaN).toDouble()
 
                 val result = DnpFacePipeline3250.metricsToMeasurementResult3250(
                     m = out.metrics,
                     originalUriStr = out.originalUriStr,
                     dbgUriStr = out.dbgPath3250,
-                    finalAnnotatedUriStr = out.finalAnnotatedUriStr3250,  // ✅ ESTA ES LA CLAVE
+                    finalAnnotatedUriStr = out.finalAnnotatedUriStr3250,
                     anchoMm = ancho,
                     altoMm = alto,
                     diagMayorMm = diag,
                     filHboxMm = filHboxMm3250,
-                    filVboxMm = filVboxMm3250
+                    filVboxMm = filVboxMm3250,
+                    filEyeSizeMm = filEyeSizeMm
                 )
                 val intent = Intent(this, ResultsActivity::class.java).apply {
                     addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)

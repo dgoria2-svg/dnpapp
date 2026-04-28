@@ -50,7 +50,6 @@ import java.util.Date
 import java.util.Locale
 import kotlin.math.abs
 import kotlin.math.ceil
-import kotlin.math.hypot
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
@@ -82,6 +81,7 @@ object DnpFacePipeline3250 {
         val browLeftBottomYpx: Float?,
         val browRightBottomYpx: Float?,
         val eyeEllipsesGlobal3250: List<EyeEllipseMask3250>? = null,
+        val maskPolysGlobal3250: List<List<PointF>>?,
         val browLeftPts3250: List<PointF>? = null,
         val browRightPts3250: List<PointF>? = null
     )
@@ -462,7 +462,8 @@ object DnpFacePipeline3250 {
                 workMaskFullU83250 = frontMasks3250.workMaskFullU8,
                 rimBodyMaskFullU83250 = frontMasks3250.rimBodyMaskFullU8,
                 innerBoundaryMaskFullU83250 = frontMasks3250.innerBoundaryMaskFullU8,
-                flattenMaskFullU83250 = frontMasks3250.flattenMaskFullU8
+                flattenMaskFullU83250 = frontMasks3250.flattenMaskFullU8,
+                vetoMaskFullU83250 = maskFull3250
             )
 
         } catch (t: Throwable) {
@@ -499,7 +500,8 @@ object DnpFacePipeline3250 {
                 workMaskFullU83250 = frontMasks3250.workMaskFullU8,
                 rimBodyMaskFullU83250 = frontMasks3250.rimBodyMaskFullU8,
                 innerBoundaryMaskFullU83250 = frontMasks3250.innerBoundaryMaskFullU8,
-                flattenMaskFullU83250 = frontMasks3250.flattenMaskFullU8
+                flattenMaskFullU83250 = frontMasks3250.flattenMaskFullU8,
+                vetoMaskFullU83250 = maskFull3250
             )
         } catch (t: Throwable) {
             Log.e(TAG, "CHK3250 FAIL ROI EDGE OI", t)
@@ -926,7 +928,6 @@ object DnpFacePipeline3250 {
             Log.e(TAG, "Iris error", t)
             null
         }
-
         return if (irisRaw != null) {
             IrisPack3250(
                 ok = true,
@@ -937,10 +938,26 @@ object DnpFacePipeline3250 {
                 pRight = irisRaw.rightIrisCenterPx,
                 browLeftBottomYpx = irisRaw.leftBrowBottomYpx,
                 browRightBottomYpx = irisRaw.rightBrowBottomYpx,
-                eyeEllipsesGlobal3250 = irisRaw.eyeEllipsesGlobal3250
+                eyeEllipsesGlobal3250 = irisRaw.eyeEllipsesGlobal3250,
+                maskPolysGlobal3250 = irisRaw.maskPolysGlobal3250,
+                browLeftPts3250 = irisRaw.leftBrowPtsPx3250,
+                browRightPts3250 = irisRaw.rightBrowPtsPx3250
             )
         } else {
-            IrisPack3250(false, null, null, null, null, null, null, null)
+            IrisPack3250(
+                ok = false,
+                midlineXpx = null,
+                midlineA = null,
+                midlineB = null,
+                pLeft = null,
+                pRight = null,
+                browLeftBottomYpx = null,
+                browRightBottomYpx = null,
+                eyeEllipsesGlobal3250 = null,
+                maskPolysGlobal3250 = null,
+                browLeftPts3250 = null,
+                browRightPts3250 = null
+            )
         }
     }
 
@@ -1234,8 +1251,7 @@ object DnpFacePipeline3250 {
 
     /**
      * Máscara simple (U8): marca zonas de ojos/cejas para que EdgeMapBuilder haga flattening (anti-halo)
-     * y no compute edges adentro.
-     *
+     * y no compute edges adentro. mascara parche pirata
      * Si no hay iris/brows => null (queda sin máscara).
      */
     private const val MASK_ON: Byte = 0xFF.toByte()
@@ -1247,132 +1263,122 @@ object DnpFacePipeline3250 {
     ): ByteArray? {
         if (!iris.ok) return null
 
-        val pL = iris.pLeft
-        val pR = iris.pRight
-        if (pL == null || pR == null) return null
+        val polys = iris.maskPolysGlobal3250
+        if (polys.isNullOrEmpty()) return null
 
         val mask = ByteArray(w * h)
 
-        fun fillEllipse(cx: Float, cy: Float, rx: Float, ry: Float) {
-            if (!cx.isFinite() || !cy.isFinite() || !rx.isFinite() || !ry.isFinite()) return
-            if (rx <= 2f || ry <= 2f) return
+        fun fillPoly3250(poly: List<PointF>) {
+            if (poly.size < 3) return
 
-            val x0 = (cx - rx).roundToInt().coerceIn(0, w - 1)
-            val x1 = (cx + rx).roundToInt().coerceIn(0, w - 1)
-            val y0 = (cy - ry).roundToInt().coerceIn(0, h - 1)
-            val y1 = (cy + ry).roundToInt().coerceIn(0, h - 1)
+            val pts = poly
+                .filter { it.x.isFinite() && it.y.isFinite() }
+                .map {
+                    PointF(
+                        it.x.coerceIn(0f, (w - 1).toFloat()),
+                        it.y.coerceIn(0f, (h - 1).toFloat())
+                    )
+                }
 
-            val invRx2 = 1f / (rx * rx)
-            val invRy2 = 1f / (ry * ry)
+            if (pts.size < 3) return
 
-            for (yy in y0..y1) {
-                val dy = yy - cy
-                val dy2 = dy * dy * invRy2
-                val off = yy * w
-                for (xx in x0..x1) {
-                    val dx = xx - cx
-                    val v = dx * dx * invRx2 + dy2
-                    if (v <= 1f) mask[off + xx] = MASK_ON
+            val minY = pts.minOf { it.y }.toInt().coerceIn(0, h - 1)
+            val maxY = pts.maxOf { it.y }.toInt().coerceIn(0, h - 1)
+
+            for (y in minY..maxY) {
+                val yf = y + 0.5f
+                val xs = ArrayList<Float>()
+
+                var j = pts.lastIndex
+                for (i in pts.indices) {
+                    val pi = pts[i]
+                    val pj = pts[j]
+
+                    // FIX división por 0
+                    if (kotlin.math.abs(pj.y - pi.y) < 1e-3f) {
+                        j = i
+                        continue
+                    }
+
+                    val crosses = (pi.y > yf) != (pj.y > yf)
+
+                    if (crosses) {
+                        val x = pi.x + (yf - pi.y) * (pj.x - pi.x) / (pj.y - pi.y)
+                        if (x.isFinite()) xs += x
+                    }
+
+                    j = i
+                }
+
+                if (xs.size < 2) continue
+                xs.sort()
+
+                var k = 0
+                while (k + 1 < xs.size) {
+                    val x0 = xs[k].toInt().coerceIn(0, w - 1)
+                    val x1 = xs[k + 1].toInt().coerceIn(0, w - 1)
+
+                    if (x1 >= x0) {
+                        val off = y * w
+                        for (x in x0..x1) {
+                            mask[off + x] = MASK_ON
+                        }
+                    }
+
+                    k += 2
                 }
             }
         }
 
-        fun dilate(radius: Int) {
-            if (radius <= 0) return
+        fun dilateXY(radiusX: Int, radiusUp: Int, radiusDown: Int) {
+            if (radiusX <= 0 && radiusUp <= 0 && radiusDown <= 0) return
+
             val src = mask.copyOf()
+
             for (y in 0 until h) {
-                val y0 = max(0, y - radius)
-                val y1 = min(h - 1, y + radius)
+                val y0 = max(0, y - radiusDown)
+                val y1 = min(h - 1, y + radiusUp)
+
                 for (x in 0 until w) {
-                    val x0 = max(0, x - radius)
-                    val x1 = min(w - 1, x + radius)
+                    val x0 = max(0, x - radiusX)
+                    val x1 = min(w - 1, x + radiusX)
+
                     var hit = false
                     var yy = y0
+
                     while (yy <= y1 && !hit) {
                         val off = yy * w
                         var xx = x0
+
                         while (xx <= x1) {
-                            if (src[off + xx].toInt() != 0) {
+                            if ((src[off + xx].toInt() and 0xFF) != 0) {
                                 hit = true
                                 break
                             }
                             xx++
                         }
+
                         yy++
                     }
-                    if (hit) mask[y * w + x] = MASK_ON
+
+                    if (hit) {
+                        mask[y * w + x] = MASK_ON
+                    }
                 }
             }
         }
 
-        fun stampAlongSegment(
-            a: PointF,
-            b: PointF,
-            rx: Float,
-            ry: Float,
-            stepPx: Float
-        ) {
-            val dx = b.x - a.x
-            val dy = b.y - a.y
-            val len = hypot(dx.toDouble(), dy.toDouble()).toFloat()
-
-            if (!len.isFinite() || len <= 0.5f) {
-                fillEllipse(a.x, a.y, rx, ry)
-                return
-            }
-
-            val steps = max(1, ceil(len / max(1f, stepPx)).toInt())
-            for (i in 0..steps) {
-                val t = i.toFloat() / steps.toFloat()
-                val x = a.x + dx * t
-                val y = a.y + dy * t
-                fillEllipse(x, y, rx, ry)
-            }
+        // 1. rellenar ojos + cejas
+        for (poly in polys) {
+            fillPoly3250(poly)
         }
 
-        fun addPolylineMask(
-            pts: List<PointF>?,
-            rx: Float,
-            ry: Float,
-            stepPx: Float
-        ) {
-            if (pts == null || pts.size < 2) return
-
-            for (i in 0 until pts.lastIndex) {
-                val a = pts[i]
-                val b = pts[i + 1]
-                if (!a.x.isFinite() || !a.y.isFinite() || !b.x.isFinite() || !b.y.isFinite()) continue
-                stampAlongSegment(a, b, rx, ry, stepPx)
-            }
-        }
-
-        val d = abs(pR.x - pL.x).coerceIn(40f, w * 0.90f)
-        val rxBase = (0.25f * d).coerceIn(40f, w * 0.26f)
-        var ryBase = (0.19f * d).coerceIn(30f, h * 0.22f)
-        ryBase = min(ryBase, 0.88f * rxBase)
-
-        fun addEyeMask(c: PointF) {
-            val cx = c.x.coerceIn(0f, (w - 1).toFloat())
-            val cy = c.y.coerceIn(0f, (h - 1).toFloat())
-
-            val rx = (1.12f * rxBase).coerceIn(20f, w * 0.32f)
-            val ry = (1.28f * ryBase).coerceIn(18f, h * 0.28f)
-            val cy2 = (cy - 0.18f * ry).coerceIn(0f, (h - 1).toFloat())
-
-            fillEllipse(cx, cy2, rx, ry)
-        }
-
-        addEyeMask(pL)
-        addEyeMask(pR)
-
-        val browRx = (0.09f * d).coerceIn(6f, 18f)
-        val browRy = (0.06f * d).coerceIn(5f, 14f)
-        val browStep = (0.05f * d).coerceIn(3f, 8f)
-
-        addPolylineMask(iris.browLeftPts3250, browRx, browRy, browStep)
-        addPolylineMask(iris.browRightPts3250, browRx, browRy, browStep)
-
-        dilate(radius = 3)
+        // 2. agrandar FUERTE hacia arriba (clave)
+        dilateXY(
+            radiusX = 18,
+            radiusUp = 55,   // 🔥 esto mata el ruido superior
+            radiusDown = 20
+        )
 
         return mask
     }
@@ -2072,7 +2078,7 @@ object DnpFacePipeline3250 {
             context = ctx,
             usedPack = detOdFinal,
             debugTag = "OD",
-            guideMaskU8 = guideOdU8
+            faceMaskU8 = maskOdU8
 
         )
 
@@ -2080,7 +2086,7 @@ object DnpFacePipeline3250 {
             context = ctx,
             usedPack = detOiFinal,
             debugTag = "OI",
-            guideMaskU8 = guideOiU8
+            faceMaskU8 = maskOiU8
 
         )
         fun pxFrom(
@@ -2525,13 +2531,13 @@ object DnpFacePipeline3250 {
 
         stage?.onStage(R.string.dnp_stage_debug)
 
-        val dbgBmp = buildFinalDebugBitmap3250(
-            stillBmp = stillBmp,
-            roiSrc = roiSrc,
-            pm = pm,
-            placedOdUsed = placedOdUsed,
-            placedOiUsed = placedOiGlobal0
-        )
+         val dbgBmp = buildFinalDebugBitmap3250(
+             stillBmp = stillBmp,
+             roiSrc = roiSrc,
+             pm = pm,
+             placedOdUsed = placedOdUsed,
+             placedOiUsed = placedOiUsed
+         )
 
         val dbgUri = saveDebugBitmapToCache3250(
             ctx = ctx,
@@ -2548,16 +2554,16 @@ object DnpFacePipeline3250 {
         val dbgUriStr = dbgUri?.toString()
         Log.d(TAG, "DBG_URI_3250=$dbgUriStr")
 
-        return FitPack3250(
-            pxPerMmFaceD = pxPerMmFinalUsed3250,
-            placedOdUsed = placedOdUsed,
-            placedOiUsed = placedOiGlobal0,
-            rimOd = rimOd,
-            rimOi = rimOi,
-            probeOd = probeOd3250,
-            probeOi = probeOi3250,
-            dbgPath3250 = dbgUriStr
-        )
+         return FitPack3250(
+             pxPerMmFaceD = pxPerMmFinalUsed3250,
+             placedOdUsed = placedOdUsed,
+             placedOiUsed = placedOiUsed,
+             rimOd = rimOd,
+             rimOi = rimOi,
+             probeOd = probeOd3250,
+             probeOi = probeOi3250,
+             dbgPath3250 = dbgUriStr
+         )
     }
 
     private fun buildFinalDebugBitmap3250(

@@ -69,12 +69,16 @@ internal fun pairPolylineToGlobal3250(
         )
     }
 }
-
+internal enum class RimWinnerSource3250 {
+    INNER,
+    OUTER,
+    INFERRED
+}
 internal data class RimSearchPolicy3250(
-    val requireOuter: Boolean,
-    val requireTop: Boolean,
-    val innerMandatory: Boolean,
-    val validateOuterAgainstInner: Boolean
+    val requireInnerLaterals: Boolean,
+    val requireBottomInner: Boolean,
+    val preferTopOuter: Boolean,
+    val allowOuter: Boolean
 )
 
 internal fun buildRimSearchPolicy3250(
@@ -82,34 +86,53 @@ internal fun buildRimSearchPolicy3250(
 ): RimSearchPolicy3250 =
     when (profile3250) {
         RimProfile3250.FULL_RIM -> RimSearchPolicy3250(
-            requireOuter = false,
-            requireTop = false,
-            innerMandatory = true,
-            validateOuterAgainstInner = false
+            requireInnerLaterals = true,
+            requireBottomInner = true,
+            preferTopOuter = false,
+            allowOuter = true
         )
+
         RimProfile3250.RANURADO -> RimSearchPolicy3250(
-            requireOuter = false,
-            requireTop = true,
-            innerMandatory = true,
-            validateOuterAgainstInner = false
+            requireInnerLaterals = true,
+            requireBottomInner = true,
+            preferTopOuter = false,
+            allowOuter = false
         )
+
         RimProfile3250.PERFORADO -> RimSearchPolicy3250(
-            requireOuter = false,
-            requireTop = false,
-            innerMandatory = true,
-            validateOuterAgainstInner = false
+            requireInnerLaterals = true,
+            requireBottomInner = true,
+            preferTopOuter = false,
+            allowOuter = false
         )
     }
+
 internal fun applyProfileGate3250(
     input: RimGateInput3250
 ): RimGateResult3250 {
     val policy3250 = buildRimSearchPolicy3250(input.profile3250)
 
-    if (policy3250.innerMandatory && !input.hasInnerLaterals) {
+    if (input.winnerSource3250 == RimWinnerSource3250.OUTER) {
         return RimGateResult3250(
             accepted = false,
             confidenceOut = 0f,
-            reason3250 = "missing_inner"
+            reason3250 = "winner_is_outer"
+        )
+    }
+
+    if (policy3250.requireInnerLaterals && !input.hasInnerLaterals) {
+        return RimGateResult3250(
+            accepted = false,
+            confidenceOut = 0f,
+            reason3250 = "missing_inner_laterals"
+        )
+    }
+
+    if (policy3250.requireBottomInner && !input.hasBottomInner) {
+        return RimGateResult3250(
+            accepted = false,
+            confidenceOut = 0f,
+            reason3250 = "missing_bottom_inner"
         )
     }
 
@@ -117,70 +140,57 @@ internal fun applyProfileGate3250(
 
     conf *= input.ratioPenalty.coerceIn(0f, 1f)
 
-    val hasTopObs = input.topObservedY != null
-    val hObsPx = (input.bottomUsedY - input.topUsedY).toFloat()
+    val hObsPx =
+        if (input.topObservedY != null && input.bottomObservedY != null) {
+            (input.bottomObservedY - input.topObservedY).toFloat()
+        } else {
+            Float.NaN
+        }
+
+    val hasRealHeightObs =
+        hObsPx.isFinite() &&
+                hObsPx > 1f &&
+                input.expHGuessPx.isFinite() &&
+                input.expHGuessPx > 1f
 
     val hErrRel =
-        if (hasTopObs && input.expHGuessPx > 1f && hObsPx > 1f) {
+        if (hasRealHeightObs) {
             abs(hObsPx - input.expHGuessPx) / input.expHGuessPx
         } else {
             0f
         }
 
-    val heightGate =
-        if (!hasTopObs) {
-            1f
-        } else {
+    if (hasRealHeightObs) {
+        val heightGate =
             when {
                 hErrRel <= 0.08f -> 1.00f
                 hErrRel <= 0.15f -> 0.75f
                 hErrRel <= 0.22f -> 0.45f
                 else -> 0.10f
             }
-        }
 
-    conf *= heightGate
+        conf *= heightGate
+    }
 
     when (input.profile3250) {
         RimProfile3250.FULL_RIM -> {
-            if (hasTopObs && hErrRel > 0.18f) {
+            if (hasRealHeightObs && hErrRel > 0.18f) {
                 return RimGateResult3250(
                     accepted = false,
                     confidenceOut = 0f,
                     reason3250 = "height_conflict_full_rim"
                 )
             }
-
         }
 
         RimProfile3250.RANURADO -> {
-            if (!policy3250.requireTop) {
-                return RimGateResult3250(
-                    accepted = false,
-                    confidenceOut = 0f,
-                    reason3250 = "invalid_policy_ranurado"
-                )
-            }
-
-            if (!hasTopObs) {
-                return RimGateResult3250(
-                    accepted = false,
-                    confidenceOut = 0f,
-                    reason3250 = "missing_top_ranurado"
-                )
-            }
-
-            if (hErrRel > 0.20f) {
+            if (hasRealHeightObs && hErrRel > 0.20f) {
                 conf *= 0.35f
             }
         }
 
         RimProfile3250.PERFORADO -> {
-            if (input.hasOuterLaterals) {
-                conf *= 0.80f
-            }
-
-            if (hasTopObs && hErrRel > 0.22f) {
+            if (hasRealHeightObs && hErrRel > 0.22f) {
                 conf *= 0.40f
             }
         }

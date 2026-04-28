@@ -29,7 +29,7 @@ object EdgeMapBuilder3250 {
 
     private const val TAG = "EdgeMapBuilder3250"
 
-    data class RoiEdgePack3250(
+    class RoiEdgePack3250(
         val roiRectGlobal3250: Rect,
         val w3250: Int,
         val h3250: Int,
@@ -61,6 +61,8 @@ object EdgeMapBuilder3250 {
         val cannyIgnoreZeros3250: Boolean = true,
         val cannyHighPercentile3250: Double = 99.0,
         val cannyLowFrac3250: Double = 0.50,
+        val scoreMixWeight3250: Double = 0.85,
+        val cannyMixWeight3250: Double = 0.15,
         val debugSaveToGallery3250: Boolean = false
     )
 
@@ -74,7 +76,8 @@ object EdgeMapBuilder3250 {
         workMaskFullU83250: ByteArray? = null,
         rimBodyMaskFullU83250: ByteArray? = null,
         innerBoundaryMaskFullU83250: ByteArray? = null,
-        flattenMaskFullU83250: ByteArray? = null
+        flattenMaskFullU83250: ByteArray? = null,
+        vetoMaskFullU83250: ByteArray? = null
     ): RoiEdgePack3250 {
         val roi = clampRect3250(roiRectGlobal3250, stillBmp.width, stillBmp.height)
         require(roi.width() > 4 && roi.height() > 4) {
@@ -108,7 +111,21 @@ object EdgeMapBuilder3250 {
             fullH = stillBmp.height,
             roi = roi
         )
-
+        val vetoMaskRoiU83250 = cropFullMaskToRoi3250(
+            full = vetoMaskFullU83250,
+            fullW = stillBmp.width,
+            fullH = stillBmp.height,
+            roi = roi
+        )
+        Log.d(
+            TAG,
+            "EDGE_MASKS[$debugTag3250] " +
+                    "work=${countNonZero3250(workMaskRoiU83250 ?: ByteArray(0))} " +
+                    "rim=${countNonZero3250(rimBodyMaskRoiU83250 ?: ByteArray(0))} " +
+                    "inner=${countNonZero3250(innerBoundaryMaskRoiU83250 ?: ByteArray(0))} " +
+                    "flatten=${countNonZero3250(flattenMaskRoiU83250 ?: ByteArray(0))} " +
+                    "veto=${countNonZero3250(vetoMaskRoiU83250 ?: ByteArray(0))}"
+        )
         val roiBmp = Bitmap.createBitmap(
             stillBmp,
             roi.left,
@@ -217,9 +234,20 @@ object EdgeMapBuilder3250 {
         org.opencv.core.Core.convertScaleAbs(hScore32, hScore)
         org.opencv.core.Core.convertScaleAbs(vScore32, vScore)
 
-        val scoreU8 = matU8ToByteArray3250(score)
-        val hScoreU8 = matU8ToByteArray3250(hScore)
-        val vScoreU8 = matU8ToByteArray3250(vScore)
+        val vetoRoiU83250 = buildVetoRoi3250(
+            flattenMaskU83250 = flattenMaskRoiU83250,
+            rimBodyMaskU83250 = rimBodyMaskRoiU83250,
+            innerBoundaryMaskU83250 = innerBoundaryMaskRoiU83250,
+            vetoMaskRoiU83250 = vetoMaskRoiU83250
+        )
+
+        val scoreU8 = applyVeto3250(matU8ToByteArray3250(score), vetoRoiU83250, zeroValue3250 = 0)
+        val hScoreU8 = applyVeto3250(matU8ToByteArray3250(hScore), vetoRoiU83250, zeroValue3250 = 0)
+        val vScoreU8 = applyVeto3250(matU8ToByteArray3250(vScore), vetoRoiU83250, zeroValue3250 = 0)
+
+        score.put(0, 0, scoreU8)
+        hScore.put(0, 0, hScoreU8)
+        vScore.put(0, 0, vScoreU8)
 
         val scoreThr = computeScoreThreshold3250(
             scoreU83250 = scoreU8,
@@ -243,7 +271,14 @@ object EdgeMapBuilder3250 {
         Imgproc.Canny(blur, canny, cannyLow, cannyHigh, 3, false)
 
         val edgeRaw = Mat()
-        org.opencv.core.Core.max(scoreBin, canny, edgeRaw)
+        org.opencv.core.Core.addWeighted(
+            scoreBin,
+            params3250.scoreMixWeight3250,
+            canny,
+            params3250.cannyMixWeight3250,
+            0.0,
+            edgeRaw
+        )
 
         val edgePost = postProcessEdgeU83250(
             srcU83250 = edgeRaw,
@@ -255,9 +290,10 @@ object EdgeMapBuilder3250 {
 
         val dirU8 = buildDirMap3250(gx16, gy16)
 
-        val cannyU8 = matU8ToByteArray3250(canny)
-        val edgeRawU8 = matU8ToByteArray3250(edgeRaw)
-        val edgePostU8 = matU8ToByteArray3250(edgePost)
+        val cannyU8 = applyVeto3250(matU8ToByteArray3250(canny), vetoRoiU83250, zeroValue3250 = 0)
+        val edgeRawU8 = applyVeto3250(matU8ToByteArray3250(edgeRaw), vetoRoiU83250, zeroValue3250 = 0)
+        val edgePostU8 = applyVeto3250(matU8ToByteArray3250(edgePost), vetoRoiU83250, zeroValue3250 = 0)
+        val dirU8Clean = applyVeto3250(dirU8, vetoRoiU83250, zeroValue3250 = 255)
 
         val pack = RoiEdgePack3250(
             roiRectGlobal3250 = roi,
@@ -270,7 +306,7 @@ object EdgeMapBuilder3250 {
             cannyU83250 = cannyU8,
             edgeRawU83250 = edgeRawU8,
             edgePostU83250 = edgePostU8,
-            dirU83250 = dirU8,
+            dirU83250 = dirU8Clean,
             thrScore3250 = scoreThr,
             pctlScore3250 = params3250.scorePercentile3250,
             nonZeroRaw3250 = countNonZero3250(edgeRawU8),
@@ -287,13 +323,13 @@ object EdgeMapBuilder3250 {
                 roi.top,
                 roi.width(),
                 roi.height(),
-                scoreThr,
-                params3250.scorePercentile3250,
+                pack.thrScore3250,
+                pack.pctlScore3250,
                 pack.nonZeroRaw3250,
                 pack.nonZeroPost3250,
                 cannyLow,
                 cannyHigh
-            )
+        )
         )
 
         if (params3250.debugSaveToGallery3250 && ctx != null) {
@@ -668,6 +704,7 @@ object EdgeMapBuilder3250 {
             dst += w
         }
 
+
         return out
     }
     private fun buildGuidedGray3250(
@@ -692,15 +729,21 @@ object EdgeMapBuilder3250 {
             val soft = blurSoftU83250[i].toInt() and 0xFF
             val strong = blurStrongU83250[i].toInt() and 0xFF
 
-            val inInner = hasInner && ((innerBoundaryMaskU83250!![i].toInt() and 0xFF) != 0)
-            val inRim = hasRim && ((rimBodyMaskU83250!![i].toInt() and 0xFF) != 0)
-            val inWork = hasWork && ((workMaskU83250!![i].toInt() and 0xFF) != 0)
+            val inInner =
+                hasInner && ((innerBoundaryMaskU83250[i].toInt() and 0xFF) != 0)
 
-            val flattenW = if (hasFlatten) {
-                (flattenMaskU83250!![i].toInt() and 0xFF) / 255f
-            } else {
-                0f
-            }
+            val inRim =
+                hasRim && ((rimBodyMaskU83250[i].toInt() and 0xFF) != 0)
+
+            val inWork =
+                hasWork && ((workMaskU83250[i].toInt() and 0xFF) != 0)
+
+            val flattenW =
+                if (hasFlatten) {
+                    ((flattenMaskU83250[i].toInt() and 0xFF) / 255f).coerceIn(0f, 1f)
+                } else {
+                    0f
+                }
 
             val v = when {
                 inInner -> {
@@ -712,9 +755,13 @@ object EdgeMapBuilder3250 {
                 }
 
                 inWork -> {
-                    val base = ((soft * 0.35f) + (strong * 0.65f))
-                    val flat = strong.toFloat()
-                    ((base * (1f - flattenW)) + (flat * flattenW)).roundToInt()
+                    val base =
+                        (soft * 0.35f) + (strong * 0.65f)
+
+                    val mixed =
+                        (base * (1f - flattenW)) + (strong * flattenW)
+
+                    mixed.roundToInt()
                 }
 
                 else -> {
@@ -724,6 +771,69 @@ object EdgeMapBuilder3250 {
 
             out[i] = v.coerceIn(0, 255).toByte()
         }
+
+        return out
+    }
+    private fun buildVetoRoi3250(
+        flattenMaskU83250: ByteArray?,
+        rimBodyMaskU83250: ByteArray?,
+        innerBoundaryMaskU83250: ByteArray?,
+        vetoMaskRoiU83250: ByteArray?
+    ): ByteArray? {
+        val n = flattenMaskU83250?.size
+            ?: vetoMaskRoiU83250?.size
+            ?: return null
+
+        val out = ByteArray(n)
+
+        for (i in 0 until n) {
+            val inFlatten =
+                flattenMaskU83250 != null &&
+                        flattenMaskU83250.size > i &&
+                        ((flattenMaskU83250[i].toInt() and 0xFF) != 0)
+
+            val inRim =
+                rimBodyMaskU83250 != null &&
+                        rimBodyMaskU83250.size > i &&
+                        ((rimBodyMaskU83250[i].toInt() and 0xFF) != 0)
+
+            val inInner =
+                innerBoundaryMaskU83250 != null &&
+                        innerBoundaryMaskU83250.size > i &&
+                        ((innerBoundaryMaskU83250[i].toInt() and 0xFF) != 0)
+
+            val inDetectorVeto =
+                vetoMaskRoiU83250 != null &&
+                        vetoMaskRoiU83250.size > i &&
+                        ((vetoMaskRoiU83250[i].toInt() and 0xFF) != 0)
+
+            if (
+                (inFlatten && !inRim && !inInner) ||
+                (inDetectorVeto && !inRim && !inInner)
+            ) {
+                out[i] = 0xFF.toByte()
+            }
+        }
+
+        return out
+    }
+
+    private fun applyVeto3250(
+        srcU83250: ByteArray,
+        vetoU83250: ByteArray?,
+        zeroValue3250: Int
+    ): ByteArray {
+        if (vetoU83250 == null || vetoU83250.size < srcU83250.size) return srcU83250
+
+        val out = srcU83250.copyOf()
+        val z = zeroValue3250.coerceIn(0, 255).toByte()
+
+        for (i in out.indices) {
+            if ((vetoU83250[i].toInt() and 0xFF) != 0) {
+                out[i] = z
+            }
+        }
+
 
         return out
     }
@@ -790,5 +900,7 @@ object EdgeMapBuilder3250 {
             Log.e(TAG, "EDGE3250: saveBitmapPng falló $baseName3250", t)
             null
         }
+
     }
 }
+

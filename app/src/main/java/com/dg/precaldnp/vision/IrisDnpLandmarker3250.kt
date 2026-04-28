@@ -52,6 +52,21 @@ class IrisDnpLandmarker3250(
         private val LEFT_IRIS = intArrayOf(468, 469, 470, 471, 472)
         private val RIGHT_IRIS = intArrayOf(473, 474, 475, 476, 477)
 
+        private val LEFT_BROW_FULL = intArrayOf(
+            70, 63, 105, 66, 107,
+            55, 65, 52, 53, 46
+        )
+
+        private val RIGHT_BROW_FULL = intArrayOf(
+            336, 296, 334, 293, 300,
+            276, 283, 282, 295, 285
+        )
+
+        private val NOSE_FULL = intArrayOf(
+            168, 6, 197, 195, 5, 4,
+            45, 220, 115, 48, 64, 98, 97, 2,
+            326, 327, 294, 278, 344, 440, 275
+        )
         private val LEFT_EYE = intArrayOf(
             33, 7, 163, 144, 145, 153, 154, 155,
             133, 173, 157, 158, 159, 160, 161, 246
@@ -82,7 +97,8 @@ class IrisDnpLandmarker3250(
         private val MAX_IDX_NEEDED = maxIdx(
             LEFT_IRIS, RIGHT_IRIS,
             LEFT_EYE, RIGHT_EYE,
-            LEFT_BROW, RIGHT_BROW,
+            LEFT_BROW_FULL, RIGHT_BROW_FULL,
+            NOSE_FULL,
             intArrayOf(IDX_NOSE_TIP, IDX_UPPER_LIP, IDX_LOWER_LIP, IDX_NOSE_BRIDGE, IDX_CHIN)
         )
     }
@@ -308,15 +324,39 @@ class IrisDnpLandmarker3250(
                 val lm = landmarks[it]
                 PointF(lm.x() * w, lm.y() * h)
             }
+        fun expandPoly3250(
+            pts: List<PointF>,
+            scaleX: Float,
+            scaleY: Float
+        ): List<PointF> {
+            if (pts.size < 3) return pts
 
-        fun hull(points: List<PointF>): List<PointF> =
-            FaceMaskHull3250.convexHull(points)
+            val cx = pts.map { it.x }.average().toFloat()
+            val cy = pts.map { it.y }.average().toFloat()
 
-        val out = ArrayList<List<PointF>>(4)
-        out += hull(ptsFromIdx(LEFT_EYE))
-        out += hull(ptsFromIdx(RIGHT_EYE))
-        out += hull(ptsFromIdx(LEFT_BROW))
-        out += hull(ptsFromIdx(RIGHT_BROW))
+            return pts.map { p ->
+                PointF(
+                    cx + (p.x - cx) * scaleX,
+                    cy + (p.y - cy) * scaleY
+                )
+            }
+        }
+        val out = ArrayList<List<PointF>>(6)
+
+        fun closePoly(pts: List<PointF>): List<PointF> {
+            if (pts.size < 3) return pts
+            return pts + pts.first()
+        }
+
+        out += closePoly(expandPoly3250(ptsFromIdx(LEFT_EYE), 1.28f, 1.55f))
+        out += closePoly(expandPoly3250(ptsFromIdx(RIGHT_EYE), 1.28f, 1.55f))
+
+        out += closePoly(expandPoly3250(ptsFromIdx(LEFT_BROW_FULL), 1.18f, 1.80f))
+        out += closePoly(expandPoly3250(ptsFromIdx(RIGHT_BROW_FULL), 1.18f, 1.80f))
+
+        out += closePoly(expandPoly3250(ptsFromIdx(NOSE_FULL), 1.35f, 1.18f))
+
+
         return out.filter { it.size >= 3 }
     }
 
@@ -355,35 +395,6 @@ class IrisDnpLandmarker3250(
         try {
             landmarker.close()
         } catch (_: Throwable) {
-        }
-    }
-
-    object FaceMaskHull3250 {
-        fun convexHull(points: List<PointF>): List<PointF> {
-            if (points.size < 3) return points
-
-            val sorted = points.sortedWith(compareBy({ it.y }, { it.x }))
-            val pivot = sorted.first()
-
-            val byAngle = sorted.drop(1).sortedBy { p ->
-                kotlin.math.atan2(p.y - pivot.y, p.x - pivot.x)
-            }
-
-            if (byAngle.isEmpty()) return listOf(pivot)
-
-            val stack = mutableListOf(pivot, byAngle.first())
-            for (i in 1 until byAngle.size) {
-                val p = byAngle[i]
-                while (stack.size >= 2) {
-                    val top = stack[stack.size - 1]
-                    val second = stack[stack.size - 2]
-                    val cross = (top.x - second.x) * (p.y - second.y) -
-                            (top.y - second.y) * (p.x - second.x)
-                    if (cross <= 0) stack.removeAt(stack.size - 1) else break
-                }
-                stack.add(p)
-            }
-            return stack
         }
     }
 

@@ -378,8 +378,8 @@ object GlassesFrontMasker3250 {
         val mm = Core.minMaxLoc(dist)
         val maxDist = mm.maxVal.toFloat().coerceAtLeast(1f)
 
-        val startFrac = 0.22f
-        val fullFrac = 0.62f
+        val startFrac = 0.10f
+        val fullFrac = 0.50f
 
         val startDist = maxDist * startFrac
         val fullDist = maxDist * fullFrac

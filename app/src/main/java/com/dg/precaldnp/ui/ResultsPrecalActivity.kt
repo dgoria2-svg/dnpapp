@@ -211,6 +211,7 @@ class ResultsPrecalActivity : ComponentActivity() {
                 putExtra(DnpFaceCaptureActivity.EXTRA_SHAPE_TRACE, stLocal)
                 putExtra(DnpFaceCaptureActivity.EXTRA_FIL_URI, filUriLocal)
                 putExtra(DnpFaceCaptureActivity.EXTRA_ORDER_ID, orderNum)
+                putExtra("EXTRA_FIL_EYESIZE_MM", simpleGeo?.fedMm ?: Float.NaN)
             }
 
             android.util.Log.d(
@@ -430,7 +431,7 @@ class ResultsPrecalActivity : ComponentActivity() {
             // convenio consistente con visor/FIL: x=-r cos, y=+r sin
             out.add(PointF((mm * cos(a)).toFloat(), (mm * sin(a)).toFloat()))
         }
-        if (n >= 1) out.add(out.first())
+        out.add(out.first())
         return out
     }
 
@@ -440,7 +441,7 @@ class ResultsPrecalActivity : ComponentActivity() {
         val geo = simpleGeo ?: return
         val R = rotateR(geo.radiiHundredths, currentRotationDeg)
         val g = computeGeoFromRadiiHundredths(R)
-        tvStatus.text = "Trazado OK - HBOX %.2f VBOX %.2f FED %.2f".format(
+        tvStatus.text = "OK - HBOX %.2f VBOX %.2f FED %.2f".format(
             Locale.US, g.hboxMm, g.vboxMm, g.fedMm
         )
     }

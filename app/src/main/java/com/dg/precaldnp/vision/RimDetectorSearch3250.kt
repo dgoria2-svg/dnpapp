@@ -620,11 +620,12 @@ internal fun findBestBottomEdgeInWindow3250(
     profile3250: RimProfile3250,
     minOuterGapPx: Int = 0,
     maxOuterGapPx: Int = 0
-): Int {
-    if (w <= 0) return -1
+): Pair<Int, Boolean> {
+
+    if (w <= 0) return -1 to false
 
     val h = edgesU8.size / w
-    if (h <= 0) return -1
+    if (h <= 0) return -1 to false
 
     val lo = min(y0, y1).coerceIn(0, h - 1)
     val hi = max(y0, y1).coerceIn(0, h - 1)
@@ -634,6 +635,7 @@ internal fun findBestBottomEdgeInWindow3250(
     data class Hit(val x: Int, val y: Int, val score: Int)
 
     val hits = ArrayList<Hit>()
+    var bestHasOuterGlobal3250 = false
 
     for (xx in xl..xr) {
         val candidates = collectBottomCandidatesInWindow3250(
@@ -651,6 +653,9 @@ internal fun findBestBottomEdgeInWindow3250(
 
         var bestYLocal = -1
         var bestScoreLocal = Int.MIN_VALUE
+        var bottomOuterPairsLocal3250 = 0
+        var bestHasOuterLocal3250 = false
+
 
         if (
             profile3250 == RimProfile3250.FULL_RIM &&
@@ -666,8 +671,11 @@ internal fun findBestBottomEdgeInWindow3250(
                     val gap = outer.y - inner.y
                     if (gap !in minOuterGapPx..maxOuterGapPx) continue
 
+                    bottomOuterPairsLocal3250++
+
                     val gapPenalty =
                         abs(gap.toFloat() - gapTarget).roundToInt() * 4
+
 
                     val pairScore =
                         inner.score +
@@ -681,6 +689,7 @@ internal fun findBestBottomEdgeInWindow3250(
                     if (pairScore > bestScoreLocal) {
                         bestScoreLocal = pairScore
                         bestYLocal = inner.y
+                        bestHasOuterLocal3250 = true
                     }
                 }
             }
@@ -704,10 +713,14 @@ internal fun findBestBottomEdgeInWindow3250(
 
         if (bestYLocal >= 0) {
             hits.add(Hit(xx, bestYLocal, bestScoreLocal))
+
+            if (bestHasOuterLocal3250) {
+                bestHasOuterGlobal3250 = true
+            }
         }
     }
 
-    if (hits.isEmpty()) return -1
+    if (hits.isEmpty()) return -1 to false
 
     data class Group(
         val ys: ArrayList<Int>,
@@ -771,7 +784,7 @@ internal fun findBestBottomEdgeInWindow3250(
         }
     }
 
-    return bestY
+    return bestY to bestHasOuterGlobal3250
 }
 
 internal fun collectTopCandidatesInWindow3250(
@@ -840,9 +853,9 @@ internal fun collectTopCandidatesInWindow3250(
                 y = y,
                 score = score,
                 support = support,
-                dirScore = dirScore
-            )
-        )
+                dirScore = dirScore,
+                source3250 = RimWinnerSource3250.INFERRED
+            ))
     }
 
     if (raw.isEmpty()) return emptyList()
@@ -903,18 +916,24 @@ internal fun findBestTopEdgeInWindow3250(
     profile3250: RimProfile3250,
     minOuterGapPx: Int = 0,
     maxOuterGapPx: Int = 0
-): Int {
-    if (w <= 0) return -1
+): TopEdgePick3250? {
+    if (w <= 0) return null
 
     val h = edgesU8.size / w
-    if (h <= 0) return -1
+    if (h <= 0) return null
+
 
     val lo = min(y0, y1).coerceIn(0, h - 1)
     val hi = max(y0, y1).coerceIn(0, h - 1)
     val xl = min(a, b).coerceIn(0, w - 1)
     val xr = max(a, b).coerceIn(0, w - 1)
 
-    data class Hit(val x: Int, val y: Int, val score: Int)
+    data class Hit(
+        val x: Int,
+        val y: Int,
+        val score: Int,
+        val source3250: RimWinnerSource3250
+    )
 
     val hits = ArrayList<Hit>()
 
@@ -934,6 +953,7 @@ internal fun findBestTopEdgeInWindow3250(
 
         var bestYLocal = -1
         var bestScoreLocal = Int.MIN_VALUE
+        var bestSourceLocal3250 = RimWinnerSource3250.INFERRED
 
         if (
             profile3250 == RimProfile3250.FULL_RIM &&
@@ -948,7 +968,6 @@ internal fun findBestTopEdgeInWindow3250(
                     val inner = candidates[j]
                     val gap = inner.y - outer.y
                     if (gap !in minOuterGapPx..maxOuterGapPx) continue
-
                     val gapPenalty =
                         abs(gap.toFloat() - gapTarget).roundToInt() * 4
 
@@ -964,6 +983,8 @@ internal fun findBestTopEdgeInWindow3250(
                     if (pairScore > bestScoreLocal) {
                         bestScoreLocal = pairScore
                         bestYLocal = inner.y
+                        bestSourceLocal3250 = RimWinnerSource3250.INNER
+
                     }
                 }
             }
@@ -982,15 +1003,23 @@ internal fun findBestTopEdgeInWindow3250(
                     bestSingle.score +
                             (if (bestSingle.dirScore >= 100) 40 else 0) +
                             bestSingle.support * 12
+                bestSourceLocal3250 = RimWinnerSource3250.INFERRED
             }
         }
 
         if (bestYLocal >= 0) {
-            hits.add(Hit(xx, bestYLocal, bestScoreLocal))
+            hits.add(
+                Hit(
+                    x = xx,
+                    y = bestYLocal,
+                    score = bestScoreLocal,
+                    source3250 = bestSourceLocal3250
+                )
+            )
         }
     }
 
-    if (hits.isEmpty()) return -1
+    if (hits.isEmpty()) return null
 
     data class Group(
         val ys: ArrayList<Int>,
@@ -1027,6 +1056,7 @@ internal fun findBestTopEdgeInWindow3250(
     groups.add(current)
     var bestY = -1
     var bestGroupScore = Int.MIN_VALUE
+    var bestSource3250 = RimWinnerSource3250.INFERRED
 
     for (g in groups) {
         val xs = g.xs.sorted()
@@ -1050,8 +1080,28 @@ internal fun findBestTopEdgeInWindow3250(
         if (groupScore > bestGroupScore) {
             bestGroupScore = groupScore
             bestY = yMed
+
+            val innerHits = g.xs.indices.count { idx ->
+                hits.firstOrNull { hit ->
+                    hit.x == g.xs[idx] &&
+                            hit.y == g.ys[idx]
+                }?.source3250 == RimWinnerSource3250.INNER
+            }
+
+            bestSource3250 =
+                if (innerHits > 0) {
+                    RimWinnerSource3250.INNER
+                } else {
+                    RimWinnerSource3250.INFERRED
+                }
         }
     }
-
-    return bestY
+    return if (bestY >= 0) {
+            TopEdgePick3250(
+                y = bestY,
+                source3250 = bestSource3250
+            )
+        } else {
+            null
+        }
 }

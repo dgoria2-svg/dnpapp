@@ -89,7 +89,7 @@ object DebugDump3250 {
         usedPack: RimDetectPack3250?,
         debugTag: String,
         filPtsDetectorGlobal800: List<PointF>? = null,
-        guideMaskU8: ByteArray? = null,
+        faceMaskU8: ByteArray? = null,
         minIntervalMs: Long = 1200L
     ) {
         if (usedPack == null) return
@@ -98,10 +98,10 @@ object DebugDump3250 {
         if (!allow(key, minIntervalMs)) return
 
         val overlayBmp =
-            if (guideMaskU8 != null && guideMaskU8.size == usedPack.w * usedPack.h) {
+            if (faceMaskU8 != null && faceMaskU8.size == usedPack.w * usedPack.h) {
                 overlayMaskOnEdge3250(
                     edgeU8 = usedPack.edges,
-                    maskU8 = guideMaskU8,
+                    maskU8 = faceMaskU8,
                     w = usedPack.w,
                     h = usedPack.h
                 ).copy(Bitmap.Config.ARGB_8888, true)
@@ -613,16 +613,16 @@ object DebugDump3250 {
         val bmp = createBitmap(w, h)
         val px = IntArray(w * h)
 
-        val alpha = 110f / 255f
+        val alpha = 95f / 255f
 
         for (i in 0 until w * h) {
             val e = edgeU8[i].toInt() and 0xFF
             val m = maskU8[i].toInt() and 0xFF
 
             if (m != 0) {
-                val r = ((1f - alpha) * e + alpha * 0f).toInt().coerceIn(0, 255)
-                val g = ((1f - alpha) * e + alpha * 255f).toInt().coerceIn(0, 255)
-                val b = ((1f - alpha) * e + alpha * 80f).toInt().coerceIn(0, 255)
+                val r = ((1f - alpha) * e + alpha * 190f).toInt().coerceIn(0, 255)
+                val g = ((1f - alpha) * e + alpha * 120f).toInt().coerceIn(0, 255)
+                val b = ((1f - alpha) * e + alpha * 255f).toInt().coerceIn(0, 255)
                 px[i] = Color.argb(255, r, g, b)
             } else {
                 px[i] = Color.argb(255, e, e, e)
@@ -632,7 +632,6 @@ object DebugDump3250 {
         bmp.setPixels(px, 0, w, 0, 0, w, h)
         return bmp
     }
-
     fun dumpGateOverGray3250(
         context: Context,
         grayRawU8: ByteArray?,
